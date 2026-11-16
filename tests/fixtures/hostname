@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ ${1:-} == -I ]]; then
+  printf '%s\n' "${FIXTURE_ADDRESSES:-172.17.0.17}"
+else
+  printf 'fixture-agent\n'
+fi

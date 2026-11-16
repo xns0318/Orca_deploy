@@ -1,24 +1,28 @@
 # Orca deployment scripts
 
 Install Orca in existing Linux containers. Install the Windows desktop app and
-pair it with each container. No central management container is needed.
+pair it with each container. A single optional Tailscale gateway container can
+provide private access to every agent container on its Docker networks.
 
-This repository does not create containers, change entrypoints, publish ports,
-install Tailscale, or install/login agent CLIs. Prepare those separately.
+`install.sh` only installs Orca inside the existing agent container. It does not
+create agent containers, change entrypoints, publish ports, or install/login
+agent CLIs. `gateway/install.sh` creates only the shared gateway. Tailscale stays
+out of the Linux host and agent containers.
 
 ## Release and requirements
 
 - Pinned release: [Orca v1.4.259](https://github.com/stablyai/orca/releases/tag/v1.4.259).
   Official artifact URLs and SHA256 values are in `versions.lock.env`.
 - Linux: x86_64 or aarch64, glibc >= 2.28, Bash, curl, CA certificates, tar,
-  coreutils, util-linux (`flock`), and `/proc`. Debian 10+/Ubuntu 20.04+ qualify.
+  coreutils, util-linux (`flock`), `hostname`, and `/proc`. Debian 10+/Ubuntu 20.04+ qualify.
   Alpine/musl is unsupported. The server package includes Node; Electron,
   Xvfb, systemd, and a global Node installation are not required.
 - Windows: 64-bit Windows, PowerShell 5.1 or 7, outbound HTTPS, and trust in the
   official installer's signing certificate. Use the same Windows account as
   the desktop app. Git is needed for cloning; downloading a repository ZIP also works.
 - Both machines need access to GitHub release downloads. Windows must reach
-  the container's advertised WebSocket endpoint through your existing network.
+  the container's advertised WebSocket endpoint. For the shared-gateway setup,
+  first install and sign into Tailscale on Windows, then approve the gateway routes.
 - Run Linux installation as the user who owns the projects and agent logins,
   with that user's HOME and PATH. Do not add `sudo` just for this installer.
 - Keep the install prefix on persistent storage. Use a separate prefix/profile
@@ -48,14 +52,33 @@ For a repeatable rollout, check out the same reviewed deployment-repository
 commit on each machine. The release lock prevents automatic selection of `latest`.
 Review scripts before execution. Never commit pairing files or Orca state.
 
-## 1. Existing Linux container
+## 0. Shared network gateway (once per server)
 
-Assume Windows can already reach `ws://100.64.0.10:16768`, which your network
-routes to this container's port `6768`. These addresses are examples.
+On the Linux Docker host, create one gateway on the existing agent network:
 
 ```sh
-bash install.sh --name dev-01 --address ws://100.64.0.10:16768
+bash gateway/install.sh --network bridge
 ```
+
+It prompts privately for a Tailscale auth key. It does not install Tailscale on
+the host. Multiple existing networks can share one gateway by repeating
+`--network`. Set up access policy and approve the advertised routes before use.
+See the [gateway deployment guide](gateway/README.md) for credentials, policy,
+route approval, persistence and the Windows connectivity check.
+
+Skip this step when an existing private network already connects Windows to Orca.
+
+## 1. Existing Linux container
+
+After the shared gateway's subnet route and access policy are ready:
+
+```sh
+bash install.sh --name dev-01 --address auto
+```
+
+`auto` selects the container's single private IPv4 address, such as
+`ws://172.17.0.17:6768`. It does not verify gateway reachability. For multiple
+private addresses, specify the one on an advertised Docker network explicitly.
 
 This downloads and verifies the server package, creates an isolated profile,
 starts the official supervised server, checks authenticated local RPC, sets the
@@ -70,11 +93,20 @@ The installation prints the absolute paths for:
 - `bin/orca-service`: start, stop, restart, status, logs, pair, and CLI access.
 - `server.pairing.json`: private one-time pairing offer; file mode `0600`.
 
-The server listens on `0.0.0.0:6768` inside its network namespace. The
-`--address` endpoint can have a different port. For a second container mapped
-to host port `16769`, use `--name dev-02 --address ws://100.64.0.10:16769`.
-Each container can still listen internally on `6768` when namespaces differ.
+The server listens on `0.0.0.0:6768` inside its network namespace. With the
+gateway, use each container's private IP and port `6768`; no host port mapping
+is required. Containers in separate network namespaces can all use `6768`.
 Containers sharing a network namespace require distinct `--port` values.
+
+If you already use a different private entry point, an explicit address remains
+supported. For example, a reachable host address `100.64.0.10:16768` mapped to
+this container's `6768` would use:
+
+```sh
+bash install.sh --name dev-01 --address ws://100.64.0.10:16768
+```
+
+These IP addresses are examples; use the actual route and address for each container.
 
 Expose endpoints only through your private network and restrict access with
 your existing firewall/Tailscale policy. `--refuse-public` rejects public source
@@ -83,9 +115,9 @@ addresses at Orca; private-address NAT is not a substitute for a firewall.
 Additional options:
 
 ```sh
-bash install.sh --name dev-01 --address ws://100.64.0.10:16768 \
+bash install.sh --name dev-01 --address auto \
   --port 6768 --prefix /persistent/dev-01/orca
-bash install.sh --address ws://100.64.0.10:16768 --no-start
+bash install.sh --address auto --no-start
 ```
 
 Repeated installation reuses the release, identity and profile. A healthy running
@@ -204,11 +236,13 @@ identity into multiple simultaneously running containers.
 
 ## Tests
 
-These tests use temporary fixture archives, simulated RPC, and mocked Windows
-pairing responses. They never launch a real Orca server or Windows installer.
+These tests use temporary fixture archives, simulated RPC/Docker responses, and
+mocked Windows pairing responses. They never launch a real gateway, Orca server
+or Windows installer.
 
 ```sh
 bash tests/linux.sh
+bash tests/gateway.sh
 pwsh -NoProfile -File tests/windows.ps1
 ```
 
@@ -218,4 +252,6 @@ PowerShell tests run on Windows or Linux, without extra test modules.
 Real Windows acceptance still requires: fresh per-user install, signature check,
 pairing with a live container, appearance in the desktop UI, and repeat setup.
 Real network acceptance requires testing the advertised endpoint from Windows.
+Real gateway acceptance additionally requires a Docker daemon and Tailscale
+account; mocked Docker tests do not exercise container networking or enrollment.
 The scripts report RPC success only after an actual status check when deployed.

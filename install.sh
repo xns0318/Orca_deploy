@@ -3,10 +3,12 @@ set -euo pipefail
 umask 077
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$ROOT/linux/common.sh"
+source "$ROOT/linux/network.sh"
 
 usage() {
   printf '%s\n' \
     'Usage: bash install.sh --address ws://REACHABLE_HOST:PORT [options]' \
+    '  --address auto   Use the single private IPv4 address behind the shared gateway' \
     '  --name NAME      Display name (default: hostname)' \
     '  --port PORT      Container listen port (default: 6768)' \
     '  --prefix PATH    Private install/state directory (default: ~/.local/share/orca-deploy)' \
@@ -35,7 +37,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $(uname -s) == Linux ]] || fail 'This installer targets Linux containers.'
-require_commands curl tar sha256sum flock timeout getconf readlink install mktemp
+require_commands curl tar sha256sum flock timeout getconf readlink install mktemp hostname
 glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null) || fail 'glibc is required. Use Ubuntu/Debian; Alpine musl is unsupported.'
 version=${glibc#glibc }
 IFS=. read -r major minor _ <<< "$version"
@@ -65,6 +67,11 @@ LISTEN_PORT=${requested_port:-$LISTEN_PORT}
 ADVERTISE_ADDRESS=${requested_address:-$ADVERTISE_ADDRESS}
 [[ "$NODE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$ ]] || fail 'Use a node name of 1-63 letters, digits, dots, underscores or hyphens.'
 [[ "$LISTEN_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( LISTEN_PORT <= 65535 )) || fail 'Invalid listen port.'
+if [[ "$ADVERTISE_ADDRESS" == auto ]]; then
+  private_address=$(auto_private_address) || fail 'Automatic address selection needs exactly one private IPv4 address. Supply an explicit --address.'
+  ADVERTISE_ADDRESS="ws://$private_address:$LISTEN_PORT"
+  note "Advertised address: $ADVERTISE_ADDRESS (requires an approved gateway route and access policy)."
+fi
 [[ -n "$ADVERTISE_ADDRESS" ]] || fail 'Supply --address with the endpoint Windows can reach, including the published port.'
 [[ "$ADVERTISE_ADDRESS" =~ ^wss?://[^[:space:]]+$ ]] || fail 'Use a full ws://host:port or wss://host:port address.'
 

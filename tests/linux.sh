@@ -26,7 +26,8 @@ hash=$(sha256sum "$FIXTURE_ARCHIVE")
 hash=${hash%% *}
 sed -i -E "s/^(LINUX_(X64|ARM64)_SHA256)=.*/\1=$hash/" "$work/repo/versions.lock.env"
 cp "$ROOT/tests/fixtures/curl" "$work/mock-bin/curl"
-chmod +x "$work/mock-bin/curl"
+cp "$ROOT/tests/fixtures/hostname" "$work/mock-bin/hostname"
+chmod +x "$work/mock-bin/curl" "$work/mock-bin/hostname"
 export PATH="$work/mock-bin:$PATH"
 installer="$work/repo/install.sh"
 prefix="$work/install with spaces"
@@ -87,6 +88,18 @@ pass 'failed health checks block success and new pairing output'
 "$service" status >/dev/null
 "$service" stop >"$output" 2>&1
 pass 'stop and restart preserve the profile'
+
+bash "$installer" --prefix "$prefix" --address auto >"$output" 2>&1
+rg -q '^ADVERTISE_ADDRESS=ws://172.17.0.17:6768$' "$prefix/config.env"
+pid=$(<"$prefix/server.pid")
+bash "$installer" --prefix "$prefix" --address auto >"$output" 2>&1
+[[ $(<"$prefix/server.pid") == "$pid" ]]
+expect_failure env FIXTURE_ADDRESSES='172.17.0.17 10.88.0.2' bash "$installer" --prefix "$prefix" --address auto
+rg -q 'exactly one private IPv4' "$output"
+expect_failure env FIXTURE_ADDRESSES='127.0.0.1 100.64.0.2 203.0.113.2' bash "$installer" --prefix "$prefix" --address auto
+rg -q 'exactly one private IPv4' "$output"
+"$service" stop >"$output" 2>&1
+pass 'automatic private address selection is repeatable and refuses ambiguous interfaces'
 
 sleep 120 &
 unrelated=$!

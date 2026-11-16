@@ -4,3 +4,5 @@
 *.zip
 *.tar.gz
 .DS_Store
+*.authkey
+.secrets/
