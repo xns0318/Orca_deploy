@@ -1,0 +1,6 @@
+.cache/
+*.pairing.json
+*.log
+*.zip
+*.tar.gz
+.DS_Store
