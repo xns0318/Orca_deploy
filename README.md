@@ -1,13 +1,38 @@
 # Orca deployment scripts
 
-Install Orca in existing Linux containers. Install the Windows desktop app and
-pair it with each container. A single optional Tailscale gateway container can
-provide private access to every agent container on its Docker networks.
+Install Orca in existing Linux containers. A persistent Linux hub aggregates
+their sessions for a phone paired once with that hub. Windows is an optional
+client and can be shut down. One shared Tailscale gateway provides private access.
+
+**For the central mobile setup, start with [hub deployment](hub/README.md).**
+The network-only gateway does not aggregate Orca sessions on its own.
 
 `install.sh` only installs Orca inside the existing agent container. It does not
 create agent containers, change entrypoints, publish ports, or install/login
-agent CLIs. `gateway/install.sh` creates only the shared gateway. Tailscale stays
-out of the Linux host and agent containers.
+agent CLIs. `gateway/install.sh` creates only the shared gateway.
+`hub/install.sh` adds the full, windowless Orca aggregation runtime alongside it;
+`hub/connect.sh` installs/registers an existing agent container from the Docker host.
+Tailscale stays out of the Linux host and agent containers.
+
+## Central phone access
+
+From this repository on the Docker host:
+
+```sh
+bash hub/install.sh --network bridge
+bash hub/connect.sh --container 4299bfe79667 --name 2-machine-dev
+docker exec -it orca-hub hubctl pair
+```
+
+Scan the hub's QR code once in Orca Mobile while the phone is connected to
+the same Tailscale network. Add further containers with `hub/connect.sh`.
+No new phone scan is needed. The hub uses the gateway's stable Tailscale IP
+and TCP port `6768`, printed by the installer. Allow that destination in the
+tailnet policy. Phone access through the hub does not require subnet-route approval;
+Windows connections directly to container IPs still use those routes.
+
+An existing Windows-to-container connection stays unchanged. The sections below
+also document standalone node installation and direct Windows connections.
 
 ## Release and requirements
 
@@ -16,7 +41,8 @@ out of the Linux host and agent containers.
 - Linux: x86_64 or aarch64, glibc >= 2.28, Bash, curl, CA certificates, tar,
   coreutils, util-linux (`flock`, `setsid`), `hostname`, and `/proc`. Debian 10+/Ubuntu 20.04+ qualify.
   Alpine/musl is unsupported. The server package includes Node; Electron,
-  Xvfb, systemd, and a global Node installation are not required.
+  Xvfb, systemd, and a global Node installation are not required in agent containers.
+  The separate hub image includes Electron and Xvfb; the host needs Docker, not a desktop.
 - Windows: 64-bit Windows, PowerShell 5.1 or 7, outbound HTTPS, and trust in the
   official installer's signing certificate. Use the same Windows account as
   the desktop app. Git is needed for cloning; downloading a repository ZIP also works.
@@ -187,7 +213,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Connect.ps1 -N
 
 Each new client needs its own offer. Run `orca-service pair` again after an
 earlier offer is consumed. Existing paired computers keep their credentials.
-For a phone, `orca-service pair --mobile` produces the native mobile pairing offer.
+For central phone access, use `docker exec -it orca-hub hubctl pair` on the host.
+`orca-service pair --mobile` is the separate single-container pairing path;
+it does not provide the central multi-container setup.
 
 ### Repeat execution
 
@@ -243,6 +271,8 @@ or Windows installer.
 ```sh
 bash tests/linux.sh
 bash tests/gateway.sh
+bash tests/hub.sh
+node --test tests/hub-config.cjs
 pwsh -NoProfile -File tests/windows.ps1
 ```
 
@@ -255,3 +285,7 @@ Real network acceptance requires testing the advertised endpoint from Windows.
 Real gateway acceptance additionally requires a Docker daemon and Tailscale
 account; mocked Docker tests do not exercise container networking or enrollment.
 The scripts report RPC success only after an actual status check when deployed.
+
+The optional [live hub test](hub/README.md#verification) launches real, isolated
+Orca processes and exercises the released encrypted mobile protocol. It requires
+the pinned full Linux app, pinned standalone server, and Xvfb.

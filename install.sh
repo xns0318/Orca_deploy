@@ -13,12 +13,13 @@ usage() {
     '  --port PORT      Container listen port (default: 6768)' \
     '  --prefix PATH    Private install/state directory (default: ~/.local/share/orca-deploy)' \
     '  --no-start       Install only; do not start or create a pairing offer' \
+    '  --no-pair        Start without creating an offer (central hub enrollment creates its own)' \
     '  --help           Show help' \
     'Run as the same user and HOME as your agent CLIs. Network setup stays outside this script.'
 }
 
 PREFIX=${ORCA_DEPLOY_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/orca-deploy}
-requested_address= requested_name= requested_port= no_start=0
+requested_address='' requested_name='' requested_port='' no_start=0 no_pair=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --address|--name|--port|--prefix)
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2 ;;
     --no-start) no_start=1; shift ;;
+    --no-pair) no_pair=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) fail "Unknown option: $1" ;;
   esac
@@ -141,7 +143,7 @@ if [[ "$no_start" == 0 ]]; then
   # Do not leak the install lock into the long-lived server process.
   "$PREFIX/bin/orca-service" start 8>&-
   rpc host name --name "$NODE_NAME" --json | "$NODE_BIN" "$PREFIX/lib/rpc-result.mjs" status >/dev/null
-  "$PREFIX/bin/orca-service" pair 8>&-
+  if [[ "$no_pair" == 0 ]]; then "$PREFIX/bin/orca-service" pair 8>&-; fi
 fi
 note "Installed Orca $ORCA_VERSION at $PREFIX"
 note "Control: $PREFIX/bin/orca-service {start|stop|status|pair|logs}"

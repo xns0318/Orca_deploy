@@ -1,5 +1,9 @@
 # Shared Tailscale gateway
 
+For phone pairing once across all containers, use the [central hub setup](../hub/README.md).
+This gateway alone supplies networking. The hub adds Orca's application-level
+remote-server catalog and mobile relay, independent of Windows.
+
 One gateway container connects Windows to the existing agent containers. Only
 the gateway and Windows run Tailscale. The Linux host and agent containers do
 not need a Tailscale installation.

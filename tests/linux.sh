@@ -98,6 +98,12 @@ bash "$installer" --prefix "$prefix" --name dev-01 --address ws://100.64.0.1:167
 identity=$(rg '^INSTANCE_ID=' "$prefix/config.env")
 pass 'install-only works in paths with spaces and keeps state private'
 
+bash "$installer" --prefix "$prefix" --no-pair >"$output" 2>&1
+"$service" status >/dev/null
+[[ ! -f "$prefix/server.pairing.json" ]]
+"$service" stop >/dev/null 2>&1
+pass 'hub enrollment can start a node without minting an unused pairing offer'
+
 export ORCA_ENVIRONMENT=unrelated ORCA_PAIRING_CODE=unrelated ORCA_REMOTE_PAIRING=unrelated
 FIXTURE_START_DELAY_MS=1500 bash "$installer" --prefix "$prefix" >"$output" 2>&1
 "$service" status >"$work/status"

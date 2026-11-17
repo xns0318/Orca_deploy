@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set +x
+set -euo pipefail
+umask 077
+app=${ORCA_HUB_APP:-/opt/Orca}
+script=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+export ORCA_USER_DATA_PATH="${ORCA_USER_DATA_PATH:-$HOME/.config/orca}"
+export ORCA_BACKGROUND_LAUNCH=1
+unset ORCA_ENVIRONMENT ORCA_PAIRING_CODE ORCA_REMOTE_PAIRING NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE
+if [[ ${1:-} == register || ${1:-} == remove ]]; then
+  mkdir -p "$ORCA_USER_DATA_PATH"
+  exec 9>"$ORCA_USER_DATA_PATH/.hub-registration.lock"
+  flock -w 30 9 || { printf '%s\n' 'Another enrollment is in progress.' >&2; exit 1; }
+fi
+exec env ELECTRON_RUN_AS_NODE=1 "$app/orca-ide" "$script/hubctl.cjs" "$@"
