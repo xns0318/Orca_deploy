@@ -1,7 +1,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-const { resolve } = require('node:path');
+const { resolve, join } = require('node:path');
+const { mkdtempSync, symlinkSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { checkServeConfig } = require('../hub/orca-api.cjs');
 
 test('Serve leaves unrelated private listeners alone and accepts only the exact hub forwarder', () => {
@@ -30,4 +32,17 @@ test('invalid config and port are refused, and parser errors do not echo secret 
   });
   assert.equal(result.status, 1);
   assert(!`${result.stdout}${result.stderr}`.includes('TEST_PRIVATE_KEY'));
+});
+
+test('hubctl resolves its module directory when invoked through an installed symlink', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orca hubctl '));
+  try {
+    symlinkSync(process.execPath, join(dir, 'orca-ide'));
+    symlinkSync(resolve(__dirname, '../hub/hubctl'), join(dir, 'hubctl'));
+    const result = spawnSync('bash', [join(dir, 'hubctl'), 'check-serve', '6768'], {
+      input: '{}', encoding: 'utf8',
+      env: { ...process.env, HOME: dir, ORCA_HUB_APP: dir }
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

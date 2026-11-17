@@ -54,9 +54,31 @@ if (args[0] === 'container' && args[1] === 'inspect') {
 }
 if (args[0] === 'image' && args[1] === 'inspect') {
   if (!state.images.includes(args.at(-1))) fail();
+  if (format) {
+    const m = state.imageMetadata[args.at(-1)];
+    done(`${m.os} ${m.arch} ${m.fingerprint}`);
+  }
   done('{}');
 }
-if (args[0] === 'build') { state.images.push(flag('--tag')); save(); done(); }
+if (args[0] === 'build') {
+  if (process.env.HUB_FIXTURE_BUILD_FAIL) fail();
+  const image = flag('--tag');
+  state.images.push(image);
+  state.imageMetadata ||= {};
+  state.imageMetadata[image] = { os: 'linux', arch: 'amd64', fingerprint: flag('--label').split('=')[1] };
+  save(); done();
+}
+if (args[0] === 'image' && args[1] === 'save') {
+  const image = args.at(-1);
+  done(JSON.stringify({ image, metadata: state.imageMetadata[image] }));
+}
+if (args[0] === 'image' && args[1] === 'load') {
+  const data = JSON.parse(require('node:zlib').gunzipSync(fs.readFileSync(flag('--input'))));
+  state.images.push(data.image);
+  state.imageMetadata ||= {};
+  state.imageMetadata[data.image] = data.metadata;
+  save(); done();
+}
 if (args[0] === 'create') {
   const name = flag('--name');
   if (state.containers[name]) fail();

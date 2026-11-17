@@ -60,6 +60,46 @@ The installer enables only a private `tailscale serve --bg --tcp=6768` forwarder
 It does not enable Funnel or overwrite an unrelated listener. Existing subnet
 routes stay available for direct Windows-to-container connections.
 
+## Offline Hub Image
+
+If installation stops at `FROM` with a `registry-1.docker.io` timeout, the Docker
+daemon cannot reach Docker Hub. The gateway remains running. Import a complete
+hub image built on a connected machine; the target host then needs no Docker Hub,
+Debian mirror or Orca package download for the hub.
+
+On an internet-connected Linux Docker builder with the same target architecture
+and repository revision:
+
+```sh
+bash hub/export-image.sh --output /tmp/orca-hub.tar.gz
+```
+
+Copy both `orca-hub.tar.gz` and `orca-hub.tar.gz.sha256` to the target host.
+Keep the bundle outside the Git repository. From the matching checkout, run:
+
+```sh
+bash hub/install.sh --network bridge --image-archive ../orca-hub.tar.gz
+```
+
+The installer checks SHA256 before modifying Docker state, uses
+[`docker image load`](https://docs.docker.com/reference/cli/docker/image/load/),
+and checks the image tag, Linux architecture and source fingerprint before starting
+the hub. An explicit `--image-sha256 DIGEST` can replace the adjacent checksum file.
+Only import bundles from your own trusted builder. The checksum detects corruption;
+it does not authenticate a separately obtained publisher. Export fails if its output
+already exists. For a builder configured without a bridge, use `--build-network host`.
+Builds pass through the standard `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and lowercase
+environment variables using Docker's predefined proxy arguments, without adding
+them to the final image environment.
+
+The archive contains only the image, not Tailscale keys, hub volumes, phone pairings
+or agent sessions. Keep the same repository revision for future deployments of that
+archive. A fresh gateway still needs its own Tailscale image and enrollment; an
+existing healthy gateway and its state are preserved. Re-running installation with
+the same archive does not rebuild or recreate the hub.
+Allow at least 3 GB of free disk for the archive and import; Docker storage drivers
+can require additional space.
+
 ## Enroll An Existing Container
 
 Run on the Docker host, from the same repository:
@@ -205,6 +245,17 @@ bash tests/gateway.sh
 bash tests/hub.sh
 node --test tests/hub-config.cjs
 ```
+
+After building or loading a matching image, run the container smoke test:
+
+```sh
+bash tests/hub-container.sh
+```
+
+This creates disposable, isolated containers and a volume. It checks real image
+startup, the observer, non-root read-only operation, mobile pairing generation and
+identity persistence across restart, then removes its test resources. It needs
+no Tailscale enrollment and does not touch the deployment containers.
 
 Real protocol test with unpacked, checksum-verified release artifacts:
 

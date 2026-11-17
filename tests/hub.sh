@@ -79,4 +79,56 @@ assert.equal(state.containers['orca-gateway'].id, 'gateway-id');
 assert.equal(state.containers['orca-hub'].labels['com.orca-deploy.address'], 'ws://100.92.0.8:6769');
 NODE
 pass 'explicit hub recreation preserves the gateway, persisted registration and home volume'
+archive="$work/hub.tar.gz"
+bash "$ROOT/hub/export-image.sh" --output "$archive" >"$output" 2>&1
+[[ -s "$archive" && -s "$archive.sha256" ]]
+expect_failure bash "$ROOT/hub/export-image.sh" --output "$archive"
+pass 'image exporter creates a checksummed archive and refuses to overwrite an existing bundle'
+cp "$work/before" "$HUB_FIXTURE/state.json"
+expect_failure bash "$ROOT/hub/install.sh" --image-archive "$archive" --image-sha256 "$(printf '0%.0s' {1..64})"
+rg -q 'checksum mismatch' "$output"
+cmp "$work/before" "$HUB_FIXTURE/state.json"
+expect_failure bash "$ROOT/hub/install.sh" --image-archive "$work/missing"
+expect_failure bash "$ROOT/hub/install.sh" --image-sha256 bad
+pass 'invalid or missing archives fail before changing gateway, image or hub state'
+calls_before=$(wc -l < "$HUB_FIXTURE/commands.jsonl")
+bash "$ROOT/hub/install.sh" --network bridge --image-archive "$archive" --dry-run >"$output" 2>&1
+cmp "$work/before" "$HUB_FIXTURE/state.json"
+bash "$ROOT/hub/install.sh" --network bridge --image-archive "$archive" >"$output" 2>&1
+rg -q 'Hub ready locally' "$output"
+cp "$HUB_FIXTURE/state.json" "$work/offline-installed"
+bash "$ROOT/hub/install.sh" --network bridge --image-archive "$archive" >"$output" 2>&1
+cmp "$work/offline-installed" "$HUB_FIXTURE/state.json"
+node - "$HUB_FIXTURE/commands.jsonl" "$calls_before" <<'NODE'
+const assert = require('node:assert/strict');
+const calls = require('fs').readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse).slice(Number(process.argv[3]));
+assert.equal(calls.filter((a) => a[0] === 'image' && a[1] === 'load').length, 1);
+assert(!calls.some((a) => ['build', 'pull', 'stop', 'rm'].includes(a[0])));
+NODE
+pass 'offline installation loads once, skips registry/build access and preserves the working gateway'
+for mismatch in arch fingerprint image; do
+  cp "$work/before" "$HUB_FIXTURE/state.json"
+  node - "$archive" "$work/wrong.tar.gz" "$mismatch" <<'NODE'
+const fs = require('node:fs'), zlib = require('node:zlib'), crypto = require('node:crypto');
+const data = JSON.parse(zlib.gunzipSync(fs.readFileSync(process.argv[2])));
+if (process.argv[4] === 'image') data.image = 'other:tag';
+else data.metadata[process.argv[4]] = 'wrong';
+const bytes = zlib.gzipSync(JSON.stringify(data));
+fs.writeFileSync(process.argv[3], bytes);
+fs.writeFileSync(process.argv[3] + '.sha256', crypto.createHash('sha256').update(bytes).digest('hex') + '  wrong.tar.gz\n');
+NODE
+  expect_failure bash "$ROOT/hub/install.sh" --image-archive "$work/wrong.tar.gz"
+  node - "$HUB_FIXTURE/state.json" <<'NODE'
+const assert = require('node:assert/strict'), state = require(process.argv[2]);
+assert(!state.containers['orca-hub']);
+assert(!state.volumes['orca-hub-home']);
+assert.equal(state.containers['orca-gateway'].id, 'gateway-id');
+NODE
+done
+pass 'wrong architecture, fingerprint or image tag is refused before a hub is created'
+cp "$work/before" "$HUB_FIXTURE/state.json"
+expect_failure env HUB_FIXTURE_BUILD_FAIL=1 bash "$ROOT/hub/install.sh"
+rg -q 'use hub/export-image.sh' "$output"
+cmp "$work/before" "$HUB_FIXTURE/state.json"
+pass 'build failures point to offline deployment and preserve existing resources'
 printf 'Hub Docker fixtures passed. No real Docker or Tailscale service was started.\n'

@@ -5,6 +5,7 @@ umask 077
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 source "$ROOT/linux/common.sh"
 source "$ROOT/versions.lock.env"
+source "$ROOT/hub/image.sh"
 usage() {
   printf '%s\n' \
     'Usage: bash hub/install.sh [--network bridge ...] [options]' \
@@ -15,20 +16,25 @@ usage() {
     '  --auth-key-file FILE    Only needed when first enrolling the Tailscale gateway' \
     '  --port PORT             Stable tailnet and local hub port (default: 6768)' \
     '  --wait-seconds N        Startup timeout (default: 120)' \
+    '  --image-archive FILE    Load an exported hub image; no hub build/download' \
+    '  --image-sha256 DIGEST   Archive SHA256 (default: read adjacent FILE.sha256)' \
     '  --recreate              Recreate this owned hub after image/config changes; keep its volume' \
     '  --dry-run               Inspect only; no builds or configuration changes'
 }
 name=orca-hub gateway=orca-gateway port=6768 wait_seconds=120 dry_run=0 recreate=0
+archive='' archive_digest='' image=''
 gateway_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --name|--gateway-name|--network|--auth-key-file|--port|--wait-seconds)
+    --name|--gateway-name|--network|--auth-key-file|--port|--wait-seconds|--image-archive|--image-sha256)
       [[ $# -ge 2 && -n "$2" ]] || fail "Missing value for $1"
       case "$1" in
         --name) name=$2 ;;
         --gateway-name) gateway=$2 ;;
         --port) port=$2 ;;
         --wait-seconds) wait_seconds=$2 ;;
+        --image-archive) archive=$2 ;;
+        --image-sha256) archive_digest=$2 ;;
         *) gateway_args+=("$1" "$2") ;;
       esac
       shift 2 ;;
@@ -42,6 +48,8 @@ done
 [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )) || fail 'Invalid port.'
 [[ "$wait_seconds" =~ ^[1-9][0-9]{0,2}$ ]] || fail '--wait-seconds must be 1-999.'
 require_commands docker sha256sum flock
+[[ -n "$archive" || -z "$archive_digest" ]] || fail '--image-sha256 requires --image-archive.'
+if [[ -n "$archive" ]]; then hub_archive_verify "$archive" "$archive_digest"; fi
 role=orca-mobile-hub-v1 volume="$name-home"
 existing=0
 if docker container inspect "$name" >/dev/null 2>&1; then
@@ -67,17 +75,7 @@ gateway_id=$(docker container inspect --format '{{.Id}}' "$gateway")
 gateway_ip=$(docker exec "$gateway" tailscale ip -4)
 [[ "$gateway_ip" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'Expected one Tailscale IPv4 address.'
 address="ws://$gateway_ip:$port"
-arch=$(docker version --format '{{.Server.Arch}}')
-case "$arch" in
-  amd64|x86_64) arch=amd64; url=$HUB_X64_URL; digest=$HUB_X64_SHA256 ;;
-  arm64|aarch64) arch=arm64; url=$HUB_ARM64_URL; digest=$HUB_ARM64_SHA256 ;;
-  *) fail 'The hub supports Linux amd64 and arm64.' ;;
-esac
-[[ "$digest" =~ ^[a-f0-9]{64}$ && "$url" == https://github.com/stablyai/orca/releases/download/* ]] || fail 'Invalid hub release lock.'
-[[ "$HUB_BASE_IMAGE" =~ ^debian:bookworm-slim@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid base image lock.'
-fingerprint=$(cd "$ROOT" && sha256sum versions.lock.env hub/Dockerfile hub/.dockerignore hub/entrypoint.sh hub/hubctl hub/hubctl.cjs hub/orca-api.cjs hub/monitor.cjs | sha256sum)
-fingerprint=${fingerprint%% *}
-image="orca-deploy-hub:$ORCA_VERSION-$arch-${fingerprint:0:16}"
+hub_image_init
 if [[ "$existing" == 1 ]]; then
   changed=0
   [[ $(docker container inspect --format '{{.Config.Image}}' "$name") == "$image" &&
@@ -88,10 +86,13 @@ if [[ "$existing" == 1 ]]; then
   fi
 fi
 if ! docker image inspect "$image" >/dev/null 2>&1; then
-  docker build --build-arg "BASE_IMAGE=$HUB_BASE_IMAGE" --build-arg "ORCA_VERSION=$ORCA_VERSION" \
-    --build-arg "ORCA_DEB_URL=$url" --build-arg "ORCA_DEB_SHA256=$digest" \
-    --tag "$image" "$ROOT/hub"
+  if [[ -n "$archive" ]]; then
+    docker image load --input "$archive"
+  else
+    hub_image_build
+  fi
 fi
+hub_image_verify
 if [[ "$existing" == 1 && ${changed:-0} == 1 ]]; then
   docker stop --time 30 "$name" >/dev/null
   docker rm "$name" >/dev/null

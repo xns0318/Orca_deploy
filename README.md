@@ -24,6 +24,10 @@ bash hub/connect.sh --container 4299bfe79667 --name 2-machine-dev
 docker exec -it orca-hub hubctl pair
 ```
 
+For a Docker Hub timeout during the hub build, use the
+[checksummed offline image](hub/README.md#offline-hub-image) with
+`bash hub/install.sh --network bridge --image-archive ../orca-hub.tar.gz`.
+
 Scan the hub's QR code once in Orca Mobile while the phone is connected to
 the same Tailscale network. Add further containers with `hub/connect.sh`.
 No new phone scan is needed. The hub uses the gateway's stable Tailscale IP

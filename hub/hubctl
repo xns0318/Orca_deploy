@@ -3,7 +3,8 @@ set +x
 set -euo pipefail
 umask 077
 app=${ORCA_HUB_APP:-/opt/Orca}
-script=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+script=$(readlink -f -- "${BASH_SOURCE[0]}")
+script=$(dirname -- "$script")
 export ORCA_USER_DATA_PATH="${ORCA_USER_DATA_PATH:-$HOME/.config/orca}"
 export ORCA_BACKGROUND_LAUNCH=1
 unset ORCA_ENVIRONMENT ORCA_PAIRING_CODE ORCA_REMOTE_PAIRING NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE
