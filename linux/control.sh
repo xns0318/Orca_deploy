@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 PREFIX=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 source "$PREFIX/lib/common.sh"
-require_commands timeout flock nohup
+require_commands timeout flock nohup setsid
 load_config
 bundle_node
 
@@ -14,7 +14,8 @@ start_server() {
     return
   fi
   mkdir -p "$PREFIX/logs"
-  nohup env ORCA_DEPLOY_PREFIX="$PREFIX" "$PREFIX/bin/orca-service" run \
+  # A separate session keeps terminal/process-group cleanup away from the service.
+  nohup setsid --wait env ORCA_DEPLOY_PREFIX="$PREFIX" "$PREFIX/bin/orca-service" run \
     >>"$PREFIX/logs/server.log" 2>&1 </dev/null &
   local child=$! attempt
   for attempt in {1..30}; do

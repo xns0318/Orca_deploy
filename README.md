@@ -14,7 +14,7 @@ out of the Linux host and agent containers.
 - Pinned release: [Orca v1.4.259](https://github.com/stablyai/orca/releases/tag/v1.4.259).
   Official artifact URLs and SHA256 values are in `versions.lock.env`.
 - Linux: x86_64 or aarch64, glibc >= 2.28, Bash, curl, CA certificates, tar,
-  coreutils, util-linux (`flock`), `hostname`, and `/proc`. Debian 10+/Ubuntu 20.04+ qualify.
+  coreutils, util-linux (`flock`, `setsid`), `hostname`, and `/proc`. Debian 10+/Ubuntu 20.04+ qualify.
   Alpine/musl is unsupported. The server package includes Node; Electron,
   Xvfb, systemd, and a global Node installation are not required.
 - Windows: 64-bit Windows, PowerShell 5.1 or 7, outbound HTTPS, and trust in the

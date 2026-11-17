@@ -20,6 +20,11 @@ try {
       throw new Error('Orca did not return an available pairing offer.');
     }
     process.stdout.write(JSON.stringify(response, null, 2) + '\n');
+  } else if (mode === 'health') {
+    if (response.result.runtime?.reachable !== true ||
+        response.result.runtime.state !== 'ready' || response.result.graph?.state !== 'ready') {
+      throw new Error('Orca runtime is not ready.');
+    }
   } else if (mode !== 'status') {
     throw new Error('Unknown response check.');
   }

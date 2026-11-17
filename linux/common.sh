@@ -10,6 +10,19 @@ require_commands() {
   done
 }
 
+server_release_version() {
+  local key= value= extra= version=
+  [[ -f "$1" && -r "$1" ]] || return 1
+  # The official VERSION manifest has separate orca, orcad, node and target entries.
+  while IFS=$' \t\r' read -r key value extra || [[ -n "$key$value$extra" ]]; do
+    [[ "$key" == orca ]] || continue
+    [[ -z "$version" && -z "$extra" && "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    version=$value
+  done < "$1"
+  [[ -n "$version" ]] || return 1
+  printf '%s\n' "$version"
+}
+
 load_config() {
   [[ -f "$PREFIX/config.env" ]] || fail "No installation at $PREFIX"
   [[ -O "$PREFIX/config.env" ]] || fail 'Run this command as the user who installed Orca.'
@@ -65,5 +78,5 @@ rpc() {
 
 health_check() {
   timeout 3 "$ORCA_BIN" status --json 2>/dev/null |
-    "$NODE_BIN" "$PREFIX/lib/rpc-result.mjs" status >/dev/null 2>&1
+    "$NODE_BIN" "$PREFIX/lib/rpc-result.mjs" health >/dev/null 2>&1
 }

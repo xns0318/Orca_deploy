@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $(uname -s) == Linux ]] || fail 'This installer targets Linux containers.'
-require_commands curl tar sha256sum flock timeout getconf readlink install mktemp hostname
+require_commands curl tar sha256sum flock setsid timeout getconf readlink install mktemp hostname
 glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null) || fail 'glibc is required. Use Ubuntu/Debian; Alpine musl is unsupported.'
 version=${glibc#glibc }
 IFS=. read -r major minor _ <<< "$version"
@@ -90,7 +90,8 @@ if owned_server_running; then
   load_config
   [[ "$old_address" == "$ADVERTISE_ADDRESS" && "$old_port" == "$LISTEN_PORT" && "$old_name" == "$NODE_NAME" ]] ||
     fail 'Stop orca-service before changing its configuration.'
-  [[ -f "$PREFIX/current/VERSION" && $(<"$PREFIX/current/VERSION") == "$ORCA_VERSION" ]] ||
+  current_version=$(server_release_version "$PREFIX/current/VERSION") || fail 'Installed server VERSION metadata is invalid.'
+  [[ "$current_version" == "$ORCA_VERSION" ]] ||
     fail 'Stop the server and back up its state before installing another version.'
   note 'Existing server configuration is unchanged.'
 fi
@@ -110,7 +111,8 @@ if [[ ! -f "$release/.archive-sha256" || $(<"$release/.archive-sha256") != "$exp
   tar --extract --gzip --file "$temporary/server.tar.gz" --directory "$temporary/release" \
     --strip-components=1 --no-same-owner --no-same-permissions
   [[ -x "$temporary/release/bin/orca-ide" && -f "$temporary/release/VERSION" ]] || fail 'Invalid server archive.'
-  [[ $(<"$temporary/release/VERSION") == "$ORCA_VERSION" ]] || fail 'Archive version does not match the lock file.'
+  archive_version=$(server_release_version "$temporary/release/VERSION") || fail 'Invalid server VERSION metadata: expected one orca X.Y.Z entry.'
+  [[ "$archive_version" == "$ORCA_VERSION" ]] || fail "Archive version does not match the lock file: expected $ORCA_VERSION, found $archive_version."
   printf '%s\n' "$expected" > "$temporary/release/.archive-sha256"
   mv -- "$temporary/release" "$release"
 fi

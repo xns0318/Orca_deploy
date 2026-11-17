@@ -18,7 +18,7 @@ cp -R "$ROOT/install.sh" "$ROOT/linux" "$ROOT/versions.lock.env" "$work/repo/"
 cp "$ROOT/tests/fixtures/orca-cli.mjs" "$work/package/orca/bin/orca-ide"
 cp "$(command -v node)" "$work/package/orca/runtimes/node-test/bin/node"
 chmod +x "$work/package/orca/bin/orca-ide"
-printf '1.4.259\n' > "$work/package/orca/VERSION"
+cp "$ROOT/tests/fixtures/server.VERSION" "$work/package/orca/VERSION"
 printf 'test\n' > "$work/package/orca/orcad/.runtime-node"
 export FIXTURE_ARCHIVE="$work/server.tar.gz" FIXTURE_DOWNLOADS="$work/downloads"
 tar -czf "$FIXTURE_ARCHIVE" -C "$work/package" orca
@@ -38,6 +38,35 @@ pass() { printf 'PASS: %s\n' "$*"; }
 expect_failure() {
   if "$@" >"$output" 2>&1; then printf 'Unexpected success: %s\n' "$*" >&2; exit 1; fi
 }
+source "$ROOT/linux/common.sh"
+[[ $(server_release_version "$ROOT/tests/fixtures/server.VERSION") == 1.4.259 ]]
+printf 'node 24.22.1\r\norca 1.4.259' > "$work/VERSION"
+[[ $(server_release_version "$work/VERSION") == 1.4.259 ]]
+for manifest in '' '1.4.259' 'orcad 1.4.259' 'orca invalid' 'orca 1.4.259 extra' $'orca 1.4.259\norca 1.4.259'; do
+  printf '%s\n' "$manifest" > "$work/VERSION"
+  expect_failure server_release_version "$work/VERSION"
+done
+expect_failure server_release_version "$work/missing-VERSION"
+pass 'official VERSION metadata is parsed and missing, malformed or duplicate Orca entries are rejected'
+
+node - "$ROOT/linux/rpc-result.mjs" <<'NODE'
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const healthy = { runtime: { reachable: true, state: 'ready' }, graph: { state: 'ready' } };
+const check = (result, mode = 'health') => spawnSync(process.execPath, [process.argv[2], mode], {
+  input: JSON.stringify({ ok: true, result }), encoding: 'utf8',
+}).status;
+assert.equal(check(healthy), 0);
+for (const result of [
+  {}, { healthy: true },
+  { ...healthy, runtime: { reachable: false, state: 'ready' } },
+  { ...healthy, runtime: { reachable: true, state: 'graph_not_ready' } },
+  { ...healthy, graph: { state: 'not_running' } },
+]) assert.notEqual(check(result), 0);
+assert.equal(check({ machineName: 'dev-01', platform: 'linux' }, 'status'), 0);
+NODE
+pass 'health checks require a reachable, ready runtime and graph, not just a successful status response'
+
 expect_failure bash "$installer" --prefix "$work/missing"
 rg -q 'Supply --address' "$output"
 pass 'first installation requires a reachable endpoint'
@@ -50,6 +79,19 @@ rg -q 'SHA256 mismatch' "$output"
 cp "$work/good.env" "$work/repo/versions.lock.env"
 pass 'checksum failure prevents extraction and execution'
 
+cp "$FIXTURE_ARCHIVE" "$work/good.tar.gz"
+sed -i 's/^orca 1\.4\.259$/orca 1.4.258/' "$work/package/orca/VERSION"
+tar -czf "$FIXTURE_ARCHIVE" -C "$work/package" orca
+hash=$(sha256sum "$FIXTURE_ARCHIVE")
+hash=${hash%% *}
+sed -i -E "s/^(LINUX_(X64|ARM64)_SHA256)=.*/\1=$hash/" "$work/repo/versions.lock.env"
+expect_failure bash "$installer" --prefix "$work/wrong-version" --name test --address ws://100.64.0.1:16768
+rg -q 'expected 1.4.259, found 1.4.258' "$output"
+[[ ! -e "$work/wrong-version/current" && ! -f "$work/wrong-version/config.env" ]]
+cp "$work/good.tar.gz" "$FIXTURE_ARCHIVE"
+cp "$work/good.env" "$work/repo/versions.lock.env"
+pass 'a checksum-valid archive with a different Orca version is rejected before activation'
+
 bash "$installer" --prefix "$prefix" --name dev-01 --address ws://100.64.0.1:16768 --no-start >"$output" 2>&1
 [[ -x "$service" && ! -f "$prefix/server.pid" && ! -f "$prefix/server.pairing.json" ]]
 [[ $(stat -c %a "$prefix/config.env") == 600 && $(stat -c %a "$prefix") == 700 ]]
@@ -57,17 +99,19 @@ identity=$(rg '^INSTANCE_ID=' "$prefix/config.env")
 pass 'install-only works in paths with spaces and keeps state private'
 
 export ORCA_ENVIRONMENT=unrelated ORCA_PAIRING_CODE=unrelated ORCA_REMOTE_PAIRING=unrelated
-bash "$installer" --prefix "$prefix" >"$output" 2>&1
+FIXTURE_START_DELAY_MS=1500 bash "$installer" --prefix "$prefix" >"$output" 2>&1
 "$service" status >"$work/status"
-node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1])); if(!r.ok||!r.result.healthy)process.exit(1)' "$work/status"
+node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1])); if(!r.ok||!r.result.runtime.reachable||r.result.runtime.state!=="ready")process.exit(1)' "$work/status"
 [[ $(stat -c %a "$prefix/server.pairing.json") == 600 ]]
 ! rg -q 'TEST_PRIVATE_OFFER|orca://pair\?' "$output" "$prefix/logs/server.log"
 node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1])); if(p.result.endpoint!=="ws://100.64.0.1:16768")process.exit(1)' "$prefix/server.pairing.json"
 node -e 'const a=JSON.parse(require("fs").readFileSync(process.argv[1])).args; for(const s of ["--supervise","--no-pairing","--refuse-public","0.0.0.0","6768"])if(!a.includes(s))process.exit(1)' "$prefix/state/fixture-server.json"
 [[ $(<"$prefix/state/fixture-name") == dev-01 ]]
-pass 'startup, authenticated health check, advertised port and private pairing output'
+pass 'delayed startup waits for readiness before setting the name and creating the private pairing offer'
 
 pid=$(<"$prefix/server.pid")
+node -e 'const fs=require("node:fs");const pid=process.argv[1].split(" ")[0];const s=fs.readFileSync(`/proc/${pid}/stat`,"utf8");const session=s.slice(s.lastIndexOf(") ")+2).split(" ")[3];if(session!==pid)throw Error("Server must lead its own session");' "$pid"
+pass 'the background server uses a separate session from its installer'
 downloads=$(wc -l < "$FIXTURE_DOWNLOADS")
 bash "$installer" --prefix "$prefix" >"$output" 2>&1
 [[ $(rg '^INSTANCE_ID=' "$prefix/config.env") == "$identity" ]]
