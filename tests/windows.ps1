@@ -96,6 +96,102 @@ try {
     Expect-Failure { Connect-OrcaEnvironment -Cli 'fixture' -Name 'dev-01' } 'status check failed'
     Assert-True ((& $module { $script:environments.Count }) -eq 1) 'Failed health check removed a saved environment.'
     Write-Host 'PASS: pairing, repeat execution, duplicate protection and failed health checks'
+
+    # Test Sync-OrcaGatewayEnvironments reconciliation, conflict protection, replacement, removal and ack safety.
+    $syncStatePath = Join-Path $temp 'sync-state.json'
+    & $module {
+        $script:syncLocal = [ordered]@{ 'manual-node' = 'manual-node' }
+        $script:syncRemote = @(
+            [pscustomobject]@{ name = 'dev-01'; nodeId = 'id-1'; endpoint = 'ws://100.69.64.76:6769/node/dev-01'; grantStatus = 'pending' },
+            [pscustomobject]@{ name = 'manual-node'; nodeId = 'id-m'; endpoint = 'ws://100.69.64.76:6769/node/manual-node'; grantStatus = 'pending' }
+        )
+        $script:syncAcked = @()
+        $script:syncRemoved = @()
+        $script:syncStatusFailFor = ''
+        $script:syncUnauthorized = $false
+        function script:Invoke-OrcaGatewayRequest {
+            param($Method, $Uri, $Token, $Body, [switch]$UseSystemProxy, $TimeoutSec)
+            if ($script:syncUnauthorized) { throw 'Gateway sync unauthorized (HTTP 401).' }
+            if ($Method -ceq 'GET' -and $Uri -like '*/sync/state') {
+                return [pscustomobject]@{ ok = $true; client = 'win-1'; nodes = $script:syncRemote }
+            }
+            if ($Method -ceq 'POST' -and $Uri -like '*/sync/claim') {
+                return [pscustomobject]@{
+                    ok    = $true
+                    offer = [pscustomobject]@{ name = $Body.node; nodeId = 'id'; endpoint = 'ws://100.69.64.76:6769/node/' + $Body.node; pairingUrl = 'orca://pair?code=SYNC_OFFER_' + $Body.node }
+                }
+            }
+            if ($Method -ceq 'POST' -and $Uri -like '*/sync/ack') {
+                $script:syncAcked += "$($Body.node):$($Body.nodeId)"
+                foreach ($n in $script:syncRemote) { if ($n.name -ceq $Body.node) { $n.grantStatus = 'claimed' } }
+                return [pscustomobject]@{ ok = $true }
+            }
+            throw "Unexpected gateway call: $Method $Uri"
+        }
+        function script:Invoke-OrcaJson {
+            param($Cli, $Arguments)
+            switch ($Arguments[0] + ' ' + $Arguments[1]) {
+                'environment list' {
+                    return @{ environments = @($script:syncLocal.Values | ForEach-Object { [pscustomobject]@{ name = $_ } }) }
+                }
+                'environment add' {
+                    $n = $Arguments[3]
+                    $script:syncLocal[$n] = $n
+                    return @{}
+                }
+                'environment rm' {
+                    $n = $Arguments[3]
+                    $script:syncLocal.Remove($n)
+                    $script:syncRemoved += $n
+                    return @{}
+                }
+                'status --environment' {
+                    $n = $Arguments[2]
+                    if ($n -ceq $script:syncStatusFailFor) { throw 'status failed' }
+                    return @{ graph = @{ state = 'ready' } }
+                }
+                default { throw "Unexpected CLI command: $($Arguments -join ' ')" }
+            }
+        }
+    }
+
+    # 1. Initial sync adds dev-01, skips unmanaged manual-node conflict, acks only dev-01.
+    $r1 = Sync-OrcaGatewayEnvironments -Cli 'fixture' -Gateway 'http://100.69.64.76:6769' -Token 'tok' -StateFile $syncStatePath
+    Assert-True ((@($r1.added) -join ',') -ceq 'dev-01') 'Expected dev-01 added.'
+    Assert-True ((@($r1.conflicts) -join ',') -ceq 'manual-node') 'Expected manual-node conflict preserved.'
+    Assert-True ((& $module { $script:syncAcked -join ',' }) -ceq 'dev-01:id-1') 'Expected only dev-01 acked.'
+
+    # 2. Idempotent second run changes nothing.
+    $r2 = Sync-OrcaGatewayEnvironments -Cli 'fixture' -Gateway 'http://100.69.64.76:6769' -Token 'tok' -StateFile $syncStatePath
+    Assert-True (@($r2.added).Count -eq 0 -and @($r2.removed).Count -eq 0) 'Second sync was not idempotent.'
+
+    # 3. Failed status check must NOT ack/burn the offer on the hub.
+    & $module {
+        $script:syncStatusFailFor = 'broken-node'
+        $script:syncRemote += [pscustomobject]@{ name = 'broken-node'; nodeId = 'id-b'; endpoint = 'ws://100.69.64.76:6769/node/broken-node'; grantStatus = 'pending' }
+    }
+    $r3 = Sync-OrcaGatewayEnvironments -Cli 'fixture' -Gateway 'http://100.69.64.76:6769' -Token 'tok' -StateFile $syncStatePath
+    Assert-True ((@($r3.failed) -join ',') -ceq 'sync:broken-node') 'Expected broken-node sync failure.'
+    Assert-True ((& $module { $script:syncAcked -contains 'broken-node:id-b' }) -eq $false) 'Failed node must not be acked.'
+
+    # 4. Removing dev-01 on hub removes managed env while preserving manual-node; -AdoptExisting adopts manual-node.
+    & $module {
+        $script:syncStatusFailFor = ''
+        $script:syncRemote = @(
+            [pscustomobject]@{ name = 'manual-node'; nodeId = 'id-m'; endpoint = 'ws://100.69.64.76:6769/node/manual-node'; grantStatus = 'pending' }
+        )
+    }
+    $r4 = Sync-OrcaGatewayEnvironments -Cli 'fixture' -Gateway 'http://100.69.64.76:6769' -Token 'tok' -StateFile $syncStatePath
+    Assert-True ((@($r4.removed) -join ',') -ceq 'dev-01') 'Removed hub node should be cleaned up locally.'
+    Assert-True ((& $module { $script:syncLocal.Contains('manual-node') }) -eq $true) 'Unmanaged manual-node must stay intact.'
+    $r5 = Sync-OrcaGatewayEnvironments -Cli 'fixture' -Gateway 'http://100.69.64.76:6769' -Token 'tok' -StateFile $syncStatePath -AdoptExisting
+    Assert-True ((@($r5.replaced) -join ',') -ceq 'manual-node') 'Expected -AdoptExisting to replace manual-node.'
+
+    # 5. Revoked token (HTTP 401) fails clearly without deleting local environments.
+    & $module { $script:syncUnauthorized = $true }
+    Expect-Failure { Sync-OrcaGatewayEnvironments -Cli 'fixture' -Gateway 'http://100.69.64.76:6769' -Token 'tok' -StateFile $syncStatePath } 'HTTP 401'
+    Assert-True ((& $module { $script:syncLocal.Contains('manual-node') }) -eq $true) 'HTTP 401 must not delete local environments.'
+    Write-Host 'PASS: Windows gateway sync handles additions, idempotency, ack safety, removals, unmanaged conflicts and HTTP 401'
 }
 finally {
     Remove-Module $module

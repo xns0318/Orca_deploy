@@ -35,7 +35,7 @@ docker run -d --name "$name" --network "container:$namespace" \
   --cap-drop ALL --security-opt no-new-privileges:true --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,size=268435456,mode=1777 --shm-size 256m \
   --mount "type=volume,src=$volume,dst=/home/orca" \
-  --env ORCA_HUB_ADDRESS=ws://100.92.0.8:6768 --env ORCA_HUB_PORT=6768 \
+  --env ORCA_HUB_ADDRESS=ws://100.92.0.8:6768 --env ORCA_HUB_PORT=6768 --env ORCA_DESKTOP_PORT=6769 \
   "$image" >/dev/null
 wait_ready
 [[ $(docker exec "$name" id -u) == 10001 ]]
@@ -45,9 +45,14 @@ identity=$(docker exec "$name" cat /home/orca/.hub-instance-id)
 observer=$(docker exec "$name" sha256sum /home/orca/.config/orca/hub-monitor.pairing.json)
 [[ -n "$identity" && -n "$observer" ]]
 docker exec "$name" hubctl pair --json >/dev/null
+docker exec "$name" hubctl client add smoke-win >/dev/null
+docker exec "$name" hubctl client list --active-names | grep -qx 'smoke-win'
+docker exec "$name" hubctl client revoke smoke-win >/dev/null
 docker restart --time 20 "$name" >/dev/null
 wait_ready
 [[ $(docker exec "$name" cat /home/orca/.hub-instance-id) == "$identity" ]]
 [[ $(docker exec "$name" sha256sum /home/orca/.config/orca/hub-monitor.pairing.json) == "$observer" ]]
-docker exec "$name" hubctl status
-printf 'PASS: real image runs non-root and read-only in a shared namespace; restart preserves identity and observer grant.\n'
+status_json=$(docker exec "$name" hubctl status)
+printf '%s\n' "$status_json"
+grep -q '"bridgeReady": true' <<< "$status_json"
+printf 'PASS: real image runs non-root and read-only in a shared namespace; restart preserves identity, observer and desktop bridge.\n'

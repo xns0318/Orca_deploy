@@ -18,9 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash orca \
     && chmod 700 /home/orca
 COPY . /opt/orca-hub/
-RUN chmod 755 /opt/orca-hub/entrypoint.sh /opt/orca-hub/hubctl \
+RUN chmod 755 /opt/orca-hub /opt/orca-hub/entrypoint.sh /opt/orca-hub/hubctl \
+    && chmod 644 /opt/orca-hub/*.cjs \
     && ln -s /opt/orca-hub/hubctl /usr/local/bin/hubctl
-ENV HOME=/home/orca ORCA_USER_DATA_PATH=/home/orca/.config/orca ORCA_HUB_REQUIRE_MONITOR=1
+ENV HOME=/home/orca ORCA_USER_DATA_PATH=/home/orca/.config/orca ORCA_HUB_REQUIRE_MONITOR=1 ORCA_HUB_REQUIRE_BRIDGE=1 ORCA_DESKTOP_PORT=6769
 USER 10001:10001
 WORKDIR /home/orca
 HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=3 CMD ["hubctl", "health"]

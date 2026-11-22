@@ -14,7 +14,7 @@ agent CLIs. `gateway/install.sh` creates only the shared gateway.
 `hub/connect.sh` installs/registers an existing agent container from the Docker host.
 Tailscale stays out of the Linux host and agent containers.
 
-## Central phone access
+## Central phone and remote Windows access
 
 From this repository on the Docker host:
 
@@ -22,6 +22,8 @@ From this repository on the Docker host:
 bash hub/install.sh --network bridge
 bash hub/connect.sh --container 4299bfe79667 --name 2-machine-dev
 docker exec -it orca-hub hubctl pair
+docker exec orca-hub hubctl client add win-1
+bash hub/sync-windows.sh --client win-1
 ```
 
 For a Docker Hub timeout during the hub build, use the
@@ -29,11 +31,16 @@ For a Docker Hub timeout during the hub build, use the
 `bash hub/install.sh --network bridge --image-archive ../orca-hub.tar.gz`.
 
 Scan the hub's QR code once in Orca Mobile while the phone is connected to
-the same Tailscale network. Add further containers with `hub/connect.sh`.
-No new phone scan is needed. The hub uses the gateway's stable Tailscale IP
-and TCP port `6768`, printed by the installer. Allow that destination in the
-tailnet policy. Phone access through the hub does not require subnet-route approval;
-Windows connections directly to container IPs still use those routes.
+the same Tailscale network. On each remote Windows computer (no SSH or Orca fork
+needed), install official Orca with `windows/Setup.ps1` and run `windows/Sync.ps1`
+once with the client token printed by `hubctl client add` (see
+[hub/README.md](hub/README.md#pair-remote-windows-computers-once-no-ssh-official-orca)).
+Add further containers with `hub/connect.sh` — both the phone and all registered
+Windows computers discover them automatically. The hub uses the gateway's stable
+Tailscale IP on TCP port `6768` (phone hub) and `6769` (Windows desktop bridge).
+Allow both destinations in tailnet policy. Neither the phone hub nor the Windows
+gateway bridge requires subnet-route approval; legacy direct Windows-to-container
+connections still use those routes.
 
 An existing Windows-to-container connection stays unchanged. The sections below
 also document standalone node installation and direct Windows connections.
@@ -276,7 +283,7 @@ or Windows installer.
 bash tests/linux.sh
 bash tests/gateway.sh
 bash tests/hub.sh
-node --test tests/hub-config.cjs
+node --test tests/hub-config.cjs tests/bridge.cjs
 pwsh -NoProfile -File tests/windows.ps1
 ```
 

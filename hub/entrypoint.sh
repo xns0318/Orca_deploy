@@ -24,13 +24,20 @@ server=$!
 script=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 env ELECTRON_RUN_AS_NODE=1 "$app/orca-ide" "$script/monitor.cjs" &
 monitor=$!
+bridge=''
+if [[ ${ORCA_HUB_DISABLE_BRIDGE:-0} != 1 ]]; then
+  env ELECTRON_RUN_AS_NODE=1 "$app/orca-ide" "$script/gateway-bridge.cjs" &
+  bridge=$!
+fi
+pids=("$server" "$monitor")
+if [[ -n "$bridge" ]]; then pids+=("$bridge"); fi
 stop() {
-  kill "$server" "$monitor" 2>/dev/null || true
-  wait "$server" "$monitor" 2>/dev/null || true
+  kill "${pids[@]}" 2>/dev/null || true
+  wait "${pids[@]}" 2>/dev/null || true
 }
 trap 'stop; exit 0' TERM INT
 set +e
-wait -n "$server" "$monitor"
+wait -n "${pids[@]}"
 code=$?
 stop
 (( code != 0 )) || code=1

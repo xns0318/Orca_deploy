@@ -10,7 +10,7 @@ hub_image_init() {
   esac
   [[ "$digest" =~ ^[a-f0-9]{64}$ && "$url" == https://github.com/stablyai/orca/releases/download/* ]] || fail 'Invalid hub release lock.'
   [[ "$HUB_BASE_IMAGE" =~ ^debian:bookworm-slim@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid base image lock.'
-  fingerprint=$(cd "$ROOT" && sha256sum versions.lock.env hub/Dockerfile hub/.dockerignore hub/entrypoint.sh hub/hubctl hub/hubctl.cjs hub/orca-api.cjs hub/monitor.cjs hub/image.sh | sha256sum)
+  fingerprint=$(cd "$ROOT" && sha256sum versions.lock.env hub/Dockerfile hub/Dockerfile.overlay hub/.dockerignore hub/entrypoint.sh hub/hubctl hub/hubctl.cjs hub/orca-api.cjs hub/monitor.cjs hub/bridge-store.cjs hub/gateway-bridge.cjs hub/image.sh | sha256sum)
   fingerprint=${fingerprint%% *}
   image="orca-deploy-hub:$ORCA_VERSION-$arch-${fingerprint:0:16}"
 }
@@ -22,7 +22,38 @@ hub_image_build() {
     --build-arg "BASE_IMAGE=$HUB_BASE_IMAGE" --build-arg "ORCA_VERSION=$ORCA_VERSION" \
     --build-arg "ORCA_DEB_URL=$url" --build-arg "ORCA_DEB_SHA256=$digest" \
     --label "com.orca-deploy.fingerprint=$fingerprint" --tag "$image" "$ROOT/hub" ||
-    fail 'Hub image build failed. For a host without registry access, use hub/export-image.sh on a connected builder, then install with --image-archive FILE. Gateway and hub state were kept.'
+    fail 'Hub image build failed. For a host without registry access, use --reuse-local-base (if an earlier matching Orca hub image is already loaded) or hub/export-image.sh on a connected builder with --image-archive FILE. Gateway and hub state were kept.'
+}
+
+hub_find_local_base_image() {
+  local preferred=${1:-} candidate meta
+  local prefix="orca-deploy-hub:$ORCA_VERSION-$arch-"
+  local -a candidates=()
+  if [[ -n "$preferred" && "$preferred" == "$prefix"* && "$preferred" != "$image" ]]; then
+    candidates+=("$preferred")
+  fi
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" && "$candidate" == "$prefix"* && "$candidate" != "$image" ]] || continue
+    candidates+=("$candidate")
+  done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' "${prefix}*" 2>/dev/null || true)
+  for candidate in "${candidates[@]}"; do
+    meta=$(docker image inspect --format '{{.Os}} {{.Architecture}} {{index .Config.Labels "com.orca-deploy.fingerprint"}}' "$candidate" 2>/dev/null || true)
+    if [[ "$meta" =~ ^linux\ ${arch}\ [a-f0-9]{64}$ ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+hub_image_build_overlay() {
+  local base_image=$1
+  [[ "$base_image" == "orca-deploy-hub:$ORCA_VERSION-$arch-"* ]] || fail "Base hub image must match orca-deploy-hub:$ORCA_VERSION-$arch-*"
+  note "Building hub update offline from local base image: $base_image"
+  docker build --network none -f "$ROOT/hub/Dockerfile.overlay" \
+    --build-arg "BASE_HUB_IMAGE=$base_image" \
+    --label "com.orca-deploy.fingerprint=$fingerprint" --tag "$image" "$ROOT/hub" ||
+    fail 'Offline overlay hub build failed. Gateway and hub state were kept.'
 }
 
 hub_image_verify() {

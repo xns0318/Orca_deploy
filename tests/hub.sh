@@ -42,15 +42,20 @@ assert(!calls.some((a) => a[0] === 'stop' || a[0] === 'rm'));
 assert(calls.some((a) => a.includes('BASE_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc')));
 assert(calls.some((a) => a.includes('ORCA_DEB_SHA256=7708c6187e5851002a505c1e2f11ed6485aa0d5dad52462bb33424be16e011f9')));
 assert(calls.some((a) => a.includes('--tcp=6768') && a.includes('tcp://127.0.0.1:6768')));
+assert(calls.some((a) => a.includes('--tcp=6769') && a.includes('tcp://127.0.0.1:6769')));
 assert(!calls.some((a) => a.includes('funnel') || a.includes('reset')));
 NODE
-pass 'a checksum-pinned nonprivileged hub shares the gateway namespace and enables only private TCP Serve'
+pass 'a checksum-pinned nonprivileged hub shares the gateway namespace and enables only private TCP Serve for mobile + desktop bridge'
 cp "$HUB_FIXTURE/state.json" "$work/installed"
 bash "$ROOT/hub/install.sh" --network bridge >"$output" 2>&1
 cmp "$work/installed" "$HUB_FIXTURE/state.json"
 expect_failure env HUB_FIXTURE_FOREIGN_HUB=1 bash "$ROOT/hub/install.sh"
 expect_failure env HUB_FIXTURE_FOREIGN_VOLUME=unrelated bash "$ROOT/hub/install.sh"
 expect_failure bash "$ROOT/hub/install.sh" --port 6769
+rg -q 'Rerun with --recreate' "$output"
+expect_failure bash "$ROOT/hub/install.sh" --port 6768 --desktop-port 6768
+rg -q 'must differ' "$output"
+expect_failure bash "$ROOT/hub/install.sh" --desktop-port 6770
 rg -q 'Rerun with --recreate' "$output"
 pass 'reinstall keeps identity; unrelated resources and unapproved reconfiguration are refused'
 expect_failure env HUB_FIXTURE_UNHEALTHY=1 bash "$ROOT/hub/install.sh" --wait-seconds 1
@@ -69,7 +74,21 @@ rg -q 'Already enrolled' "$output"
 cmp "$work/enrolled" "$HUB_FIXTURE/state.json"
 expect_failure bash "$ROOT/hub/connect.sh" --container orca-hub --name bad
 pass 'one-command enrollment sends offers through stdin, is repeatable and rejects infrastructure containers'
-bash "$ROOT/hub/install.sh" --port 6769 --recreate >"$output" 2>&1
+# Register two Windows clients and verify sync-windows.sh + connect.sh provision offers via stdin without secret leakage.
+docker exec orca-hub hubctl client add win-1 >/dev/null
+docker exec orca-hub hubctl client add win-2 >/dev/null
+bash "$ROOT/hub/sync-windows.sh" --client win-1 --dry-run >"$output" 2>&1
+rg -q 'Would provision.*win-1.*dev-01' "$output"
+bash "$ROOT/hub/sync-windows.sh" >"$output" 2>&1
+rg -q 'provisioned=2 skipped=0 failed=0' "$output"
+! rg -q 'TEST_ONLY_PRIVATE_OFFER' "$output" "$HUB_FIXTURE/commands.jsonl" "$HOME/.local/share/orca-gateway/orca-gateway/nodes/dev-01.env"
+bash "$ROOT/hub/sync-windows.sh" >"$output" 2>&1
+rg -q 'provisioned=0 skipped=2 failed=0' "$output"
+docker exec orca-hub hubctl client add win-3 >/dev/null
+bash "$ROOT/hub/connect.sh" --container agent-one --name dev-01 >"$output" 2>&1
+rg -q "Provisioned Windows gateway offer for client 'win-3' -> dev-01" "$output"
+pass 'connect.sh and sync-windows.sh provision multi-Windows gateway offers idempotently via stdin'
+bash "$ROOT/hub/install.sh" --port 6769 --desktop-port 6770 --recreate >"$output" 2>&1
 node - "$HUB_FIXTURE/state.json" <<'NODE'
 const assert = require('node:assert/strict');
 const state = require(process.argv[2]);
@@ -77,6 +96,7 @@ assert(state.registered['dev-01']);
 assert.equal(state.volumes['orca-hub-home'].owner, 'orca-hub');
 assert.equal(state.containers['orca-gateway'].id, 'gateway-id');
 assert.equal(state.containers['orca-hub'].labels['com.orca-deploy.address'], 'ws://100.92.0.8:6769');
+assert.equal(state.containers['orca-hub'].labels['com.orca-deploy.desktop-port'], '6770');
 NODE
 pass 'explicit hub recreation preserves the gateway, persisted registration and home volume'
 archive="$work/hub.tar.gz"
@@ -128,7 +148,28 @@ done
 pass 'wrong architecture, fingerprint or image tag is refused before a hub is created'
 cp "$work/before" "$HUB_FIXTURE/state.json"
 expect_failure env HUB_FIXTURE_BUILD_FAIL=1 bash "$ROOT/hub/install.sh"
-rg -q 'use hub/export-image.sh' "$output"
+rg -q 'use .*export-image.sh' "$output"
 cmp "$work/before" "$HUB_FIXTURE/state.json"
 pass 'build failures point to offline deployment and preserve existing resources'
+# Verify --reuse-local-base builds offline with --network none on top of an existing local matching hub image.
+node - "$HUB_FIXTURE/state.json" "$ORCA_VERSION" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const oldTag = `orca-deploy-hub:${process.argv[3]}-amd64-ce2bc998c47c963d`;
+state.images = [oldTag];
+state.imageMetadata = { [oldTag]: { os: 'linux', arch: 'amd64', fingerprint: 'ce2bc998c47c963d1995c9b4b60db210efe62ad538c2b8521100caf3b251ea4f' } };
+fs.writeFileSync(process.argv[2], JSON.stringify(state));
+NODE
+calls_before=$(wc -l < "$HUB_FIXTURE/commands.jsonl")
+bash "$ROOT/hub/install.sh" --network bridge --reuse-local-base >"$output" 2>&1
+node - "$HUB_FIXTURE/commands.jsonl" "$calls_before" <<'NODE'
+const assert = require('node:assert/strict');
+const calls = require('fs').readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse).slice(Number(process.argv[3]));
+const build = calls.find((a) => a[0] === 'build');
+assert(build, 'expected overlay docker build');
+assert(build.includes('--network') && build.includes('none'));
+assert(build.some((v) => v.endsWith('hub/Dockerfile.overlay')));
+assert(build.some((v) => v.includes('BASE_HUB_IMAGE=orca-deploy-hub:')));
+NODE
+pass 'offline --reuse-local-base builds updated hub scripts without registry access'
 printf 'Hub Docker fixtures passed. No real Docker or Tailscale service was started.\n'

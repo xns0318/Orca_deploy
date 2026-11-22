@@ -20,12 +20,33 @@ function checkServeConfig(config, port, required = false) {
   if (required && !config.TCP?.[port]) throw new HubError('The gateway TCP forwarder is missing.');
 }
 
+function desktopGatewayUrl(hubAddress, desktopPort) {
+  if (!/^[1-9][0-9]{0,4}$/.test(String(desktopPort || '')) || Number(desktopPort) > 65535) {
+    throw new HubError('Invalid desktop bridge port.');
+  }
+  let parsed;
+  try { parsed = new URL(hubAddress); } catch { throw new HubError('Invalid ORCA_HUB_ADDRESS.'); }
+  const protocol = parsed.protocol === 'wss:' ? 'https:' : parsed.protocol === 'ws:' ? 'http:' : null;
+  if (!protocol || !parsed.hostname) throw new HubError('Invalid ORCA_HUB_ADDRESS.');
+  const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
+  return `${protocol}//${host}:${desktopPort}`;
+}
+
+function desktopEndpoint(hubAddress, desktopPort, nodeName) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/.test(nodeName || '') || nodeName.toLowerCase() === 'local') {
+    throw new HubError('Invalid node name for desktop endpoint.');
+  }
+  const base = desktopGatewayUrl(hubAddress, desktopPort);
+  const wsBase = base.startsWith('https://') ? `wss://${base.slice(8)}` : `ws://${base.slice(7)}`;
+  return `${wsBase}/node/${nodeName}`;
+}
+
 function createHub(app, profile) {
   // Use the pinned release's own pairing, encrypted transport and atomic store APIs.
   const out = join(app, 'resources/app.asar.unpacked/out');
   const native = (path) => require(join(out, path));
   const { RuntimeClient } = native('cli/runtime/client.js');
-  const { parsePairingCode } = native('shared/remote-runtime/pairing/pairing.js');
+  const { parsePairingCode, encodePairingOffer } = native('shared/remote-runtime/pairing/pairing.js');
   const { exchangeCliPairingCode } = native('cli/runtime/environment-pairing-exchange.js');
   const store = native('shared/remote-runtime/host-store/runtime-environment-store.js');
   const { getPreferredPairingOffer } = native('shared/remote-runtime/host-catalog/runtime-environments.js');
@@ -52,6 +73,38 @@ function createHub(app, profile) {
       return { version: value.appVersion, runtimeId: value.runtimeId, ready: true };
     },
     list: () => rows().map(publicRow),
+    nodeRow(name) {
+      const row = rows().find((entry) => entry.name === name);
+      return row ? publicRow(row) : null;
+    },
+    async mintDesktopOffer(name, response, gatewayEndpoint) {
+      const row = rows().find((entry) => entry.name === name);
+      if (!row) throw new HubError('No registered server with this name.');
+      if (response?.ok !== true || response.result?.available !== true) {
+        throw new HubError('Expected a successful Orca pairing JSON response on stdin.');
+      }
+      const code = response.result.pairingUrl;
+      const offer = typeof code === 'string' ? parsePairingCode(code) : null;
+      if (!offer || offer.scope !== 'runtime') throw new HubError('A runtime-scoped pairing offer is required.');
+      const registeredOffer = getPreferredPairingOffer(row);
+      if (!sameKey(registeredOffer.publicKeyB64, offer.publicKeyB64)) {
+        throw new HubError('Pairing offer server identity does not match the registered hub node.');
+      }
+      // Activate and exchange over the container's direct private endpoint so the pending slot is freed
+      // for additional Windows clients and the credential works immediately when claimed later.
+      const internalCode = encodePairingOffer({ ...offer, endpoint: registeredOffer.endpoint });
+      const exchangedInternal = await exchangeCliPairingCode(internalCode);
+      const exchangedOffer = parsePairingCode(exchangedInternal);
+      if (!exchangedOffer) throw new HubError('Failed to exchange desktop pairing ticket.');
+      checkReady(await status(new RuntimeClient(profile, 15000, exchangedInternal, null)));
+      const finalUrl = encodePairingOffer({ ...exchangedOffer, endpoint: gatewayEndpoint });
+      return {
+        nodeId: row.id,
+        deviceId: typeof response.result.deviceId === 'string' ? response.result.deviceId : null,
+        endpoint: gatewayEndpoint,
+        pairingUrl: finalUrl
+      };
+    },
     async probe(name, endpoint) {
       const row = rows().find((entry) => entry.name === name);
       if (!row || getPreferredPairingOffer(row).endpoint !== endpoint) return false;
@@ -104,4 +157,4 @@ function createHub(app, profile) {
   };
 }
 
-module.exports = { createHub, HubError, checkServeConfig };
+module.exports = { createHub, HubError, checkServeConfig, desktopEndpoint, desktopGatewayUrl };

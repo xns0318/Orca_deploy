@@ -52,6 +52,9 @@ if (args[0] === 'container' && args[1] === 'inspect') {
     done(Object.entries(c.networks).map(([name, ip]) => format.includes('IPAddress') ? `${name} ${ip}` : name).join('\n'));
   }
 }
+if (args[0] === 'image' && args[1] === 'ls') {
+  done((state.images || []).join('\n'));
+}
 if (args[0] === 'image' && args[1] === 'inspect') {
   if (!state.images.includes(args.at(-1))) fail();
   if (format) {
@@ -119,6 +122,39 @@ if (args[0] === 'exec') {
       if (input.result.pairingUrl !== 'orca://pair?TEST_ONLY_PRIVATE_OFFER') throw Error('Missing private enrollment input');
       state.registered ||= {};
       state.registered[cmd[2]] = true; save(); done('Registered');
+    }
+    if (cmd[1] === 'desktop-endpoint') {
+      const desktopPort = state.containers['orca-hub']?.labels?.['com.orca-deploy.desktop-port'] || '6769';
+      done(`ws://100.92.0.8:${desktopPort}/node/${cmd[2]}`);
+    }
+    if (cmd[1] === 'client') {
+      state.clients ||= {};
+      if (cmd[2] === 'add') {
+        state.clients[cmd[3]] = { active: true };
+        save();
+        done(JSON.stringify({ name: cmd[3], token: `TEST_TOKEN_${cmd[3]}` }));
+      }
+      if (cmd[2] === 'list' && cmd[3] === '--active-names') {
+        done(Object.entries(state.clients).filter(([, v]) => v.active).map(([k]) => k).join('\n'));
+      }
+      if (cmd[2] === 'revoke') {
+        if (state.clients[cmd[3]]) state.clients[cmd[3]].active = false;
+        save();
+        done(JSON.stringify({ name: cmd[3], revokedAt: Date.now(), devices: [] }));
+      }
+    }
+    if (cmd[1] === 'offer-needed') {
+      if (!state.registered?.[cmd[3]]) fail();
+      if (state.offers?.[`${cmd[2]}:${cmd[3]}`]) process.exit(3);
+      done();
+    }
+    if (cmd[1] === 'offer-put') {
+      const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+      if (input.result.pairingUrl !== 'orca://pair?TEST_ONLY_PRIVATE_OFFER') throw Error('Missing private desktop offer input');
+      state.offers ||= {};
+      state.offers[`${cmd[2]}:${cmd[3]}`] = true;
+      save();
+      done(JSON.stringify({ client: cmd[2], node: cmd[3], status: 'pending' }));
     }
   }
   if (container === 'agent-one') {

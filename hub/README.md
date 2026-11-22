@@ -5,15 +5,15 @@ agent containers. Windows can be offline. Agents and project files remain in
 their original containers.
 
 ```text
-Orca Mobile + Tailscale
-        |
-        | ws://<gateway-tailscale-ip>:6768
-        v
-orca-gateway: Tailscale Serve TCP + existing subnet routes
+Orca Mobile + Tailscale           Remote Windows (x1..N) + Official Orca + Sync.ps1
+        |                                       |
+        | ws://<gateway-ip>:6768                | http/ws://<gateway-ip>:6769
+        v                                       v
+orca-gateway: Tailscale Serve TCP (:6768 + :6769) + existing subnet routes
         |
         | shared Docker network namespace
         v
-orca-hub: full Linux Orca, Electron serve, virtual display, status observer
+orca-hub: full Linux Orca (:6768) + monitor + gateway-bridge (:6769)
         |
         +-- container A: Orca server + agent CLIs
         +-- container B: Orca server + agent CLIs
@@ -53,12 +53,15 @@ For a gateway originally installed on several networks, repeat the same ordered
 `--network` options. The installer checks the existing topology and keeps its identity.
 The hub shares all of that gateway's networks. No agent-container network is modified.
 
-The installer prints the real central address, such as `ws://100.92.0.8:6768`.
+The installer prints the real central addresses, such as `ws://100.92.0.8:6768`
+(phone hub) and `http://100.92.0.8:6769` (Windows desktop gateway bridge).
 The `100.*` address comes from the gateway. It stays independent of agent-container IPs.
-Allow your phone's identity/device to reach this gateway TCP port in Tailscale policy.
-The installer enables only a private `tailscale serve --bg --tcp=6768` forwarder.
+Allow your phone and Windows devices to reach these gateway TCP ports in Tailscale policy.
+The installer enables only private `tailscale serve --bg --tcp=6768` and
+`tailscale serve --bg --tcp=6769` forwarders (override with `--port` and `--desktop-port`).
 It does not enable Funnel or overwrite an unrelated listener. Existing subnet
-routes stay available for direct Windows-to-container connections.
+routes stay available for legacy direct Windows-to-container connections, though
+Windows clients using the gateway bridge no longer need subnet-route access.
 
 ## Offline Hub Image
 
@@ -163,6 +166,53 @@ only containers intended for that same user's phone. Each phone has its own
 revocable Orca grant. Reinstallation with intact state preserves these grants;
 clearing the phone's app data, revocation or loss of hub state requires pairing again.
 
+## Pair Remote Windows Computers Once (No SSH, Official Orca)
+
+Remote Windows computers do not need SSH access to the Docker host, subnet-route
+access to `172.17.0.0/16`, or a forked Orca installer. They run the official signed
+Windows Orca desktop app and connect to all registered containers through the
+gateway's private desktop bridge (`:6769`, path-routed WebSocket `/node/<name>`
+with end-to-end Orca E2EE preserved intact).
+
+1. On the Docker host, register a named client for each Windows machine (for example `win-1`, `win-2`, `win-3`):
+
+```sh
+docker exec orca-hub hubctl client add win-1
+```
+
+This prints a one-time sync token (the hub stores only its SHA-256 hash) and the
+ready-to-run PowerShell command.
+
+2. If containers were already enrolled before adding this Windows client, mint independent gateway offers for them:
+
+```sh
+bash hub/sync-windows.sh --client win-1
+```
+
+3. On the remote Windows machine (connected to the same Tailscale network):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Setup.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows\Sync.ps1 `
+  -Gateway http://<gateway-tailscale-ip>:6769 -Token <one-time-token> -InstallTask
+```
+
+`Sync.ps1` encrypts the token with Windows CurrentUser DPAPI, bypasses the system
+HTTP proxy by default (compatible with Clash Verge), pulls pending container offers,
+adds them through official `orca.exe environment add`, burns the server-side plaintext
+offer on confirmation, and registers a silent background scheduled task (default every 60s).
+The running Windows Orca desktop app automatically reloads its sidebar when `orca.exe`
+adds or removes environments.
+
+Going forward:
+- **Add a new container**: run `bash hub/connect.sh --container <id> --name <label>` on the host. It registers the container for the phone and automatically provisions independent gateway offers for every active Windows client.
+- **Container restart with new IP**: rerun `hub/connect.sh`. The gateway bridge updates its upstream target for `/node/<label>` immediately; Windows clients keep working with zero re-pairing.
+- **Remove a container**: run `docker exec orca-hub hubctl remove <label>`. Active bridge tunnels close immediately and Windows clients automatically remove the managed entry on the next sync (manual/unmanaged local environments are never removed).
+- **Revoke one Windows computer**: run `docker exec orca-hub hubctl client revoke win-2`. Its sync token immediately returns HTTP 401 without affecting other Windows machines or the phone; the output also lists per-node `deviceId` values for container-side revocation.
+- **Uninstall Windows auto-sync**: run `.\windows\Sync.ps1 -UninstallTask` (add `-CleanManaged` and/or `-RemoveConfig` if desired).
+
+See [docs/windows-gateway-sync.md](../docs/windows-gateway-sync.md) for the full design and G01–G14 acceptance checklist.
+
 ## Why The Full Runtime
 
 The pinned `1.4.259` standalone `orcad` package does not install the desktop's
@@ -229,6 +279,14 @@ An image/configuration change requires an explicit hub replacement:
 bash hub/install.sh --network bridge --recreate
 ```
 
+On an offline host where a matching `orca-deploy-hub:<version>-<arch>-*` base image
+is already loaded (for example from an earlier deployment or `docker image load`),
+rebuild updated hub scripts completely offline with `--reuse-local-base`:
+
+```sh
+bash hub/install.sh --network bridge --recreate --reuse-local-base
+```
+
 This stops/replaces only the owned hub container and keeps its home volume. Agents
 continue on their nodes; phones reconnect after the hub starts. If the gateway
 itself was recreated, rerun this command so the hub joins its new network namespace.
@@ -243,7 +301,7 @@ Fixture tests (no Docker daemon needed):
 bash tests/linux.sh
 bash tests/gateway.sh
 bash tests/hub.sh
-node --test tests/hub-config.cjs
+node --test tests/hub-config.cjs tests/bridge.cjs
 ```
 
 After building or loading a matching image, run the container smoke test:

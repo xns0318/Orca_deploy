@@ -1,7 +1,10 @@
 *
 !Dockerfile
+!Dockerfile.overlay
 !entrypoint.sh
 !hubctl
 !hubctl.cjs
 !orca-api.cjs
 !monitor.cjs
+!bridge-store.cjs
+!gateway-bridge.cjs

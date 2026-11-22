@@ -8,15 +8,17 @@ source "$ROOT/linux/network.sh"
 usage() {
   printf '%s\n' \
     'Usage: bash hub/connect.sh --container NAME --name LABEL [options]' \
-    'Run on the Docker host. Install Orca in an existing container and register it with the hub.' \
-    '  --hub NAME        Hub container (default: orca-hub)' \
-    '  --user USER       Existing agent CLI user inside the container (default: root)' \
-    '  --prefix PATH     Existing/custom Orca install directory' \
-    '  --network NAME    Choose when multiple networks are shared with the gateway' \
-    '  --port PORT       First-install port (default: 6768); existing config is preserved' \
-    '  --dry-run         Inspect only; no installs, offers or registrations'
+    'Run on the Docker host. Install Orca in an existing container, register it with the hub,' \
+    'and provision pending gateway offers for all active Windows clients.' \
+    '  --hub NAME              Hub container (default: orca-hub)' \
+    '  --user USER             Existing agent CLI user inside the container (default: root)' \
+    '  --prefix PATH           Existing/custom Orca install directory' \
+    '  --network NAME          Choose when multiple networks are shared with the gateway' \
+    '  --port PORT             First-install port (default: 6768); existing config is preserved' \
+    '  --reprovision-windows   Re-mint Windows gateway offers even if clients already hold grants' \
+    '  --dry-run               Inspect only; no installs, offers or registrations'
 }
-container='' name='' hub=orca-hub user=root prefix='' network='' port=6768 dry_run=0
+container='' name='' hub=orca-hub user=root prefix='' network='' port=6768 dry_run=0 reprovision_windows=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --container|--name|--hub|--user|--prefix|--network|--port)
@@ -26,6 +28,7 @@ while [[ $# -gt 0 ]]; do
         --user) user=$2 ;; --prefix) prefix=$2 ;; --network) network=$2 ;; --port) port=$2 ;;
       esac
       shift 2 ;;
+    --reprovision-windows) reprovision_windows=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) fail "Unknown option: $1" ;;
@@ -84,12 +87,63 @@ tar -cf - -C "$ROOT" install.sh linux versions.lock.env |
     bash "$1/install.sh" --prefix "$2" --name "$3" --address "$4" --port "$5" --no-pair
   fi
 ' bash "$stage" "$prefix" "$name" "$address" "$port"
+
+already_enrolled=0
 if docker exec "$hub" hubctl probe "$name" "$address" >/dev/null 2>&1; then
-  note 'Already enrolled and reachable. Saved grants and phone pairing were kept.'
+  already_enrolled=1
+else
+  # The one-time access link flows only over Docker stdin, never argv, disk or logs.
+  "${run[@]}" "$prefix/bin/orca-service" cli pair --address "$address" --json |
+    docker exec -i "$hub" hubctl register "$name"
+fi
+
+# Persist non-secret host metadata so hub/sync-windows.sh can provision newly added Windows clients later.
+meta_dir="${XDG_DATA_HOME:-$HOME/.local/share}/orca-gateway/$gateway/nodes"
+mkdir -p "$meta_dir"
+chmod 700 "$(dirname -- "$meta_dir")" "$meta_dir"
+meta_tmp=$(mktemp "$meta_dir/.${name}.XXXXXX")
+{
+  printf 'NODE_NAME=%q\n' "$name"
+  printf 'NODE_CONTAINER=%q\n' "$container"
+  printf 'NODE_USER=%q\n' "$user"
+  printf 'NODE_PREFIX=%q\n' "$prefix"
+  printf 'NODE_PORT=%q\n' "$port"
+  printf 'NODE_HUB=%q\n' "$hub"
+} > "$meta_tmp"
+chmod 600 "$meta_tmp"
+mv -f -- "$meta_tmp" "$meta_dir/$name.env"
+
+provisioned_windows=0
+clients=$(docker exec "$hub" hubctl client list --active-names 2>/dev/null || true)
+if [[ -n "$clients" ]]; then
+  desktop_ep=$(docker exec "$hub" hubctl desktop-endpoint "$name")
+  while IFS= read -r client; do
+    [[ -n "$client" ]] || continue
+    need=0
+    if [[ "$reprovision_windows" == 1 ]]; then
+      need=1
+    elif docker exec "$hub" hubctl offer-needed "$client" "$name" >/dev/null 2>&1; then
+      need=1
+    fi
+    if [[ "$need" == 1 ]]; then
+      "${run[@]}" "$prefix/bin/orca-service" cli pair --address "$desktop_ep" --json |
+        docker exec -i "$hub" hubctl offer-put "$client" "$name" >/dev/null
+      provisioned_windows=$((provisioned_windows + 1))
+      note "Provisioned Windows gateway offer for client '$client' -> $name"
+    fi
+  done <<< "$clients"
+fi
+
+if [[ "$already_enrolled" == 1 ]]; then
+  if (( provisioned_windows > 0 )); then
+    note "Already enrolled and reachable. Provisioned $provisioned_windows Windows client(s); saved grants and phone pairing were kept."
+  else
+    note 'Already enrolled and reachable. Saved grants and phone pairing were kept.'
+  fi
   exit 0
 fi
-# The one-time access link flows only over Docker stdin, never argv, disk or logs.
-"${run[@]}" "$prefix/bin/orca-service" cli pair --address "$address" --json |
-  docker exec -i "$hub" hubctl register "$name"
 note 'Container enrolled. The phone keeps its existing central pairing.'
+if (( provisioned_windows > 0 )); then
+  note "Provisioned $provisioned_windows Windows client(s); remote Sync.ps1 will add '$name' automatically."
+fi
 note 'After an agent-container restart, rerun this command or use its existing Orca startup hook.'

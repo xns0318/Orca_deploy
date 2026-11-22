@@ -8,7 +8,7 @@ script=$(dirname -- "$script")
 export ORCA_USER_DATA_PATH="${ORCA_USER_DATA_PATH:-$HOME/.config/orca}"
 export ORCA_BACKGROUND_LAUNCH=1
 unset ORCA_ENVIRONMENT ORCA_PAIRING_CODE ORCA_REMOTE_PAIRING NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE
-if [[ ${1:-} == register || ${1:-} == remove ]]; then
+if [[ ${1:-} == register || ${1:-} == remove || ${1:-} == client || ${1:-} == offer-put ]]; then
   mkdir -p "$ORCA_USER_DATA_PATH"
   exec 9>"$ORCA_USER_DATA_PATH/.hub-registration.lock"
   flock -w 30 9 || { printf '%s\n' 'Another enrollment is in progress.' >&2; exit 1; }
