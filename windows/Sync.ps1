@@ -30,6 +30,7 @@ $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\', '/')
 $configFile = Join-Path $StateDirectory 'sync-config.json'
 $stateFile = Join-Path $StateDirectory 'sync-state.json'
 $logFile = Join-Path $StateDirectory 'sync.log'
+$vbsLauncher = Join-Path $StateDirectory 'sync-hidden.vbs'
 $taskName = 'OrcaDeployGatewaySync'
 
 function Write-SyncLog {
@@ -57,6 +58,7 @@ if ($UninstallTask) {
     else {
         Write-SyncLog "Scheduled task '$taskName' is not installed."
     }
+    Remove-Item -LiteralPath $vbsLauncher -Force -ErrorAction SilentlyContinue
     if ($CleanManaged -and (Test-Path -LiteralPath $stateFile -PathType Leaf)) {
         $cli = Get-OrcaCliPath -InstallDirectory $InstallDirectory
         $raw = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
@@ -179,11 +181,30 @@ finally {
 
 if ($InstallTask) {
     $scriptPath = [IO.Path]::GetFullPath($PSCommandPath)
-    if ($scriptPath -match '["\r\n]') {
-        throw 'Script path contains unsupported characters for Scheduled Task registration.'
+    if ($scriptPath -match '["\r\n]' -or $InstallDirectory -match '["\r\n]' -or $StateDirectory -match '["\r\n]') {
+        throw 'Paths contain unsupported characters for Scheduled Task registration.'
+    }
+    if (-not (Test-Path -LiteralPath $StateDirectory)) {
+        $null = New-Item -ItemType Directory -Path $StateDirectory -Force
     }
     $taskArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -InstallDirectory `"$InstallDirectory`" -StateDirectory `"$StateDirectory`" -Quiet"
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $taskArgs
+    $wscript = Get-Command 'wscript.exe' -ErrorAction SilentlyContinue
+    if ($null -ne $wscript) {
+        # Launch via GUI-subsystem wscript.exe (SW_HIDE=0) so Windows never flashes a console window.
+        $escapedCmd = ('powershell.exe ' + $taskArgs).Replace('"', '""')
+        $vbsBody = @(
+            'Option Explicit'
+            'Dim shell, cmd'
+            'Set shell = CreateObject("WScript.Shell")'
+            ('cmd = "' + $escapedCmd + '"')
+            'WScript.Quit shell.Run(cmd, 0, True)'
+        ) -join "`r`n"
+        [IO.File]::WriteAllText($vbsLauncher, $vbsBody + "`r`n", [Text.Encoding]::Unicode)
+        $action = New-ScheduledTaskAction -Execute $wscript.Source -Argument "//B //Nologo `"$vbsLauncher`""
+    }
+    else {
+        $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless powershell.exe $taskArgs"
+    }
     $repeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds($IntervalSeconds) `
         -RepetitionInterval (New-TimeSpan -Seconds $IntervalSeconds) `
         -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -194,5 +215,5 @@ if ($InstallTask) {
         -LogonType Interactive -RunLevel Limited
     $null = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($repeatTrigger, $logonTrigger) `
         -Settings $settings -Principal $principal -Force
-    Write-SyncLog "Installed background scheduled task '$taskName' (every ${IntervalSeconds}s)."
+    Write-SyncLog "Installed silent background scheduled task '$taskName' (every ${IntervalSeconds}s)."
 }
