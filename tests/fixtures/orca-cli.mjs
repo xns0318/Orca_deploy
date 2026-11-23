@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
-  console.log('1.4.259');
+  console.log('1.4.271');
   process.exit(0);
 }
 if (process.env.ORCA_ENVIRONMENT || process.env.ORCA_REMOTE_PAIRING || process.env.ORCA_PAIRING_CODE) {

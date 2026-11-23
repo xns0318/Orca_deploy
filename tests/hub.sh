@@ -31,7 +31,7 @@ cmp "$work/before" "$HUB_FIXTURE/state.json"
 pass 'hub dry-run leaves the working gateway and all state untouched'
 bash "$ROOT/hub/install.sh" --network bridge >"$output" 2>&1
 rg -q 'ws://100.92.0.8:6768' "$output"
-node - "$HUB_FIXTURE/commands.jsonl" <<'NODE'
+node - "$HUB_FIXTURE/commands.jsonl" "$HUB_X64_SHA256" <<'NODE'
 const assert = require('node:assert/strict');
 const calls = require('fs').readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
 const c = calls.find((a) => a[0] === 'create');
@@ -40,7 +40,7 @@ for (const v of ['--privileged', '--cap-add', '--publish', '-p', '--device', '--
 assert(!c.some((v) => v.includes('docker.sock')));
 assert(!calls.some((a) => a[0] === 'stop' || a[0] === 'rm'));
 assert(calls.some((a) => a.includes('BASE_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc')));
-assert(calls.some((a) => a.includes('ORCA_DEB_SHA256=7708c6187e5851002a505c1e2f11ed6485aa0d5dad52462bb33424be16e011f9')));
+assert(calls.some((a) => a.includes(`ORCA_DEB_SHA256=${process.argv[3]}`)));
 assert(calls.some((a) => a.includes('--tcp=6768') && a.includes('tcp://127.0.0.1:6768')));
 assert(calls.some((a) => a.includes('--tcp=6769') && a.includes('tcp://127.0.0.1:6769')));
 assert(!calls.some((a) => a.includes('funnel') || a.includes('reset')));
@@ -172,4 +172,39 @@ assert(build.some((v) => v.endsWith('hub/Dockerfile.overlay')));
 assert(build.some((v) => v.includes('BASE_HUB_IMAGE=orca-deploy-hub:')));
 NODE
 pass 'offline --reuse-local-base builds updated hub scripts without registry access'
+# Verify cross-version hub/upgrade.sh upgrades both hub (without Docker Hub) and enrolled nodes using single verified archives.
+node - "$HUB_FIXTURE/state.json" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const oldTag = 'orca-deploy-hub:1.4.259-amd64-ce2bc998c47c963d';
+state.images = [oldTag];
+state.imageMetadata = { [oldTag]: { os: 'linux', arch: 'amd64', fingerprint: 'ce2bc998c47c963d1995c9b4b60db210efe62ad538c2b8521100caf3b251ea4f' } };
+state.containers['orca-hub'].image = oldTag;
+state.agentVersion = '1.4.259';
+fs.writeFileSync(process.argv[2], JSON.stringify(state));
+NODE
+fake_deb="$work/fake-hub.deb"
+fake_srv="$work/fake-srv.tar.gz"
+printf 'fake-deb' > "$fake_deb"
+printf 'fake-srv' > "$fake_srv"
+deb_sha=$(sha256sum "$fake_deb"); deb_sha=${deb_sha%% *}
+srv_sha=$(sha256sum "$fake_srv"); srv_sha=${srv_sha%% *}
+repo_copy="$work/repo-upgrade"
+mkdir -p "$repo_copy"
+cp -a "$ROOT/." "$repo_copy/"
+sed -i -E "s/^(HUB_(X64|ARM64)_SHA256)=.*/\1=$deb_sha/; s/^(LINUX_(X64|ARM64)_SHA256)=.*/\1=$srv_sha/" "$repo_copy/versions.lock.env"
+calls_before=$(wc -l < "$HUB_FIXTURE/commands.jsonl")
+HUB_FIXTURE_TARGET_VERSION="$ORCA_VERSION" bash "$repo_copy/hub/upgrade.sh" --hub-deb "$fake_deb" --server-archive "$fake_srv" >"$output" 2>&1
+rg -q 'upgraded=1 skipped=0 failed=0' "$output"
+node - "$HUB_FIXTURE/commands.jsonl" "$calls_before" <<'NODE'
+const assert = require('node:assert/strict');
+const calls = require('fs').readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse).slice(Number(process.argv[3]));
+const build = calls.find((a) => a[0] === 'build');
+assert(build, 'expected cross-version upgrade docker build');
+assert(build.includes('--network') && build.includes('none'));
+assert(build.some((v) => v.endsWith('Dockerfile.upgrade')));
+assert(build.some((v) => v.includes('BASE_HUB_IMAGE=orca-deploy-hub:1.4.259-amd64-ce2bc998c47c963d')));
+assert(calls.some((a) => a[0] === 'exec' && a.includes('--upgrade') && a.includes('--archive')));
+NODE
+pass 'hub/upgrade.sh upgrades both hub and enrolled nodes offline without Docker Hub or duplicate downloads'
 printf 'Hub Docker fixtures passed. No real Docker or Tailscale service was started.\n'

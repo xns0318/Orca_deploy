@@ -47,7 +47,7 @@ also document standalone node installation and direct Windows connections.
 
 ## Release and requirements
 
-- Pinned release: [Orca v1.4.259](https://github.com/stablyai/orca/releases/tag/v1.4.259).
+- Pinned release: [Orca v1.4.271](https://github.com/stablyai/orca/releases/tag/v1.4.271).
   Official artifact URLs and SHA256 values are in `versions.lock.env`.
 - Linux: x86_64 or aarch64, glibc >= 2.28, Bash, curl, CA certificates, tar,
   coreutils, util-linux (`flock`, `setsid`), `hostname`, and `/proc`. Debian 10+/Ubuntu 20.04+ qualify.
@@ -240,10 +240,10 @@ Supplying a new pairing file for an existing name stops with an explicit error.
 Repair or remove that connection in Orca Settings before pairing it again.
 A failed status check retains the saved record and returns an error.
 
-If an installed Windows app has a different version, Setup preserves it and
-stops. Use Connect for pairing only. Planned upgrades should be explicit; do not
-downgrade a profile that has already been migrated by a newer Orca release.
-The lock pins deployment downloads; the desktop app's own updater is separate.
+If an installed Windows app has a different version, Setup keeps the existing
+installation and sessions instead of blocking. Use Orca's built-in updater on
+Windows to update the desktop app; the lock pins fresh deployment downloads and
+host-side `hub/upgrade.sh` rollouts.
 
 ## Operations and scope
 

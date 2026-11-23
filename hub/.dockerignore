@@ -1,6 +1,7 @@
 *
 !Dockerfile
 !Dockerfile.overlay
+!Dockerfile.upgrade
 !entrypoint.sh
 !hubctl
 !hubctl.cjs

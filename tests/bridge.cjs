@@ -208,7 +208,7 @@ test('gateway bridge serves authenticated sync API and transparent WS path proxy
     // Removing the node immediately closes active tunnels on reconciliation.
     const closedPromise = new Promise((resolve) => tunnelSocket.once('close', () => resolve(true)));
     nodes = [];
-    bridge.reconcileTunnels();
+    await bridge.reconcileTunnels();
     assert.equal(await closedPromise, true);
     assert.equal(bridge.activeTunnelCount('dev-01'), 0);
   } finally {

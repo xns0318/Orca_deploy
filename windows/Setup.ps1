@@ -21,9 +21,11 @@ if (Test-Path -LiteralPath $app -PathType Leaf) {
     $cli = Get-OrcaCliPath -InstallDirectory $InstallDirectory
     $installed = (Invoke-OrcaCli -Cli $cli -Arguments @('--version')).Trim()
     if ($installed -ne $lock.ORCA_VERSION) {
-        throw "Installed Orca is $installed; this repo pins $($lock.ORCA_VERSION). Existing app and sessions were kept. Use Connect.ps1 for pairing only."
+        Write-Host "Orca $installed is already installed (this repo pins $($lock.ORCA_VERSION)); keeping existing app and sessions. Use Orca's built-in updater to update Windows."
     }
-    Write-Host "Orca $installed is already installed."
+    else {
+        Write-Host "Orca $installed is already installed."
+    }
 }
 else {
     if ((Test-Path -LiteralPath $InstallDirectory) -and

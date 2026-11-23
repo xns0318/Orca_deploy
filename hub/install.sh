@@ -19,16 +19,17 @@ usage() {
     '  --wait-seconds N        Startup timeout (default: 120)' \
     '  --image-archive FILE    Load an exported hub image; no hub build/download' \
     '  --image-sha256 DIGEST   Archive SHA256 (default: read adjacent FILE.sha256)' \
-    '  --reuse-local-base      Build updated hub scripts offline on top of an existing local matching hub image' \
+    '  --reuse-local-base      Build hub updates/upgrades without Docker Hub on top of an existing local hub image' \
+    '  --hub-deb FILE          Pre-downloaded official orca-ide_<ver>_<arch>.deb (implies --reuse-local-base, fully offline)' \
     '  --recreate              Recreate this owned hub after image/config changes; keep its volume' \
     '  --dry-run               Inspect only; no builds or configuration changes'
 }
 name=orca-hub gateway=orca-gateway port=6768 desktop_port='' wait_seconds=120 dry_run=0 recreate=0 reuse_local_base=0
-archive='' archive_digest='' image=''
+archive='' archive_digest='' hub_deb='' image=''
 gateway_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --name|--gateway-name|--network|--auth-key-file|--port|--desktop-port|--wait-seconds|--image-archive|--image-sha256)
+    --name|--gateway-name|--network|--auth-key-file|--port|--desktop-port|--wait-seconds|--image-archive|--image-sha256|--hub-deb)
       [[ $# -ge 2 && -n "$2" ]] || fail "Missing value for $1"
       case "$1" in
         --name) name=$2 ;;
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
         --wait-seconds) wait_seconds=$2 ;;
         --image-archive) archive=$2 ;;
         --image-sha256) archive_digest=$2 ;;
+        --hub-deb) hub_deb=$2; reuse_local_base=1 ;;
         *) gateway_args+=("$1" "$2") ;;
       esac
       shift 2 ;;
@@ -103,9 +105,13 @@ if ! docker image inspect "$image" >/dev/null 2>&1; then
   if [[ -n "$archive" ]]; then
     docker image load --input "$archive"
   elif [[ "$reuse_local_base" == 1 ]]; then
-    base_hub_image=$(hub_find_local_base_image "$existing_image") ||
-      fail "No local base image matching orca-deploy-hub:$ORCA_VERSION-$arch-* found. Load a prior hub archive first (docker image load --input ...) or use --image-archive."
-    hub_image_build_overlay "$base_hub_image"
+    if [[ -z "$hub_deb" ]] && base_hub_image=$(hub_find_local_base_image "$existing_image" 0); then
+      hub_image_build_overlay "$base_hub_image"
+    else
+      base_hub_image=$(hub_find_local_base_image "$existing_image" 1) ||
+        fail "No local base image matching orca-deploy-hub:*-$arch-* found. Load a prior hub archive first (docker image load --input ...) or use --image-archive."
+      hub_image_build_upgrade "$base_hub_image" "$hub_deb"
+    fi
   else
     hub_image_build
   fi

@@ -84,8 +84,8 @@ async function main() {
 
   switch (action) {
     case 'health': await health(); break;
-    case 'status': print({ ...await health(), servers: hub.list(), desktopClients: bridge.listClients() }); break;
-    case 'list': print(hub.list()); break;
+    case 'status': print({ ...await health(), servers: await hub.list(), desktopClients: bridge.listClients() }); break;
+    case 'list': print(await hub.list()); break;
     case 'name': await hub.client().call('settings.update', { machineName: args[0] }); break;
     case 'probe': process.exitCode = await hub.probe(args[0], args[1]) ? 0 : 3; break;
     case 'register': {
@@ -95,14 +95,14 @@ async function main() {
       break;
     }
     case 'remove': {
-      const removed = hub.remove(args[0]);
+      const removed = await hub.remove(args[0]);
       bridge.removeNode(args[0]);
       print(removed);
       break;
     }
     case 'offer-needed': {
       const [clientName, nodeName] = args;
-      const row = hub.nodeRow(nodeName);
+      const row = await hub.nodeRow(nodeName);
       if (!row) throw new HubError('No registered server with this name.');
       process.exitCode = bridge.hasValidGrant(clientName, nodeName, row.id) ? 3 : 0;
       break;

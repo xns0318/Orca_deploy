@@ -12,6 +12,8 @@ usage() {
     '  --name NAME      Display name (default: hostname)' \
     '  --port PORT      Container listen port (default: 6768)' \
     '  --prefix PATH    Private install/state directory (default: ~/.local/share/orca-deploy)' \
+    '  --archive FILE   Use a pre-downloaded official orca-server tarball (SHA256 still verified)' \
+    '  --upgrade        Stop a running older Orca server after verifying the new release and switch versions' \
     '  --no-start       Install only; do not start or create a pairing offer' \
     '  --no-pair        Start without creating an offer (central hub enrollment creates its own)' \
     '  --help           Show help' \
@@ -19,18 +21,20 @@ usage() {
 }
 
 PREFIX=${ORCA_DEPLOY_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/orca-deploy}
-requested_address='' requested_name='' requested_port='' no_start=0 no_pair=0
+requested_address='' requested_name='' requested_port='' local_archive='' upgrade=0 no_start=0 no_pair=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --address|--name|--port|--prefix)
+    --address|--name|--port|--prefix|--archive)
       [[ $# -ge 2 && -n "$2" ]] || fail "Missing value for $1"
       case "$1" in
         --address) requested_address=$2 ;;
         --name) requested_name=$2 ;;
         --port) requested_port=$2 ;;
         --prefix) PREFIX=$2 ;;
+        --archive) local_archive=$2 ;;
       esac
       shift 2 ;;
+    --upgrade) upgrade=1; shift ;;
     --no-start) no_start=1; shift ;;
     --no-pair) no_pair=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -86,6 +90,7 @@ case "$(uname -m)" in
 esac
 [[ "$url" == https://* && "$expected" =~ ^[a-f0-9]{64}$ ]] || fail 'Invalid release URL or SHA256 in the lock file.'
 
+pending_upgrade_stop=0
 if owned_server_running; then
   [[ -f "$PREFIX/config.env" ]] || fail 'A running process has no saved configuration.'
   old_address=$ADVERTISE_ADDRESS old_port=$LISTEN_PORT old_name=$NODE_NAME
@@ -93,9 +98,16 @@ if owned_server_running; then
   [[ "$old_address" == "$ADVERTISE_ADDRESS" && "$old_port" == "$LISTEN_PORT" && "$old_name" == "$NODE_NAME" ]] ||
     fail 'Stop orca-service before changing its configuration.'
   current_version=$(server_release_version "$PREFIX/current/VERSION") || fail 'Installed server VERSION metadata is invalid.'
-  [[ "$current_version" == "$ORCA_VERSION" ]] ||
-    fail 'Stop the server and back up its state before installing another version.'
-  note 'Existing server configuration is unchanged.'
+  if [[ "$current_version" != "$ORCA_VERSION" ]]; then
+    if [[ "$upgrade" == 1 ]]; then
+      pending_upgrade_stop=1
+      note "Preparing upgrade from Orca $current_version to $ORCA_VERSION (existing server stays up until verified)."
+    else
+      fail 'Stop the server and back up its state before installing another version.'
+    fi
+  else
+    note 'Existing server configuration is unchanged.'
+  fi
 fi
 
 mkdir -p "$PREFIX/releases" "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/state" "$PREFIX/logs"
@@ -104,9 +116,15 @@ temporary=$(mktemp -d "$PREFIX/.install.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 if [[ ! -f "$release/.archive-sha256" || $(<"$release/.archive-sha256") != "$expected" ]]; then
   [[ ! -e "$release" ]] || fail 'Existing release has an unexpected checksum marker. Inspect it before retrying.'
-  note "Downloading Orca $ORCA_VERSION ($arch)..."
-  curl --fail --show-error --location --retry 3 --connect-timeout 15 --max-time 600 \
-    --proto '=https' --proto-redir '=https' "$url" -o "$temporary/server.tar.gz"
+  if [[ -n "$local_archive" ]]; then
+    [[ -f "$local_archive" && -r "$local_archive" ]] || fail "Server archive is not readable: $local_archive"
+    note "Verifying pre-downloaded Orca $ORCA_VERSION ($arch) archive..."
+    cp -- "$local_archive" "$temporary/server.tar.gz"
+  else
+    note "Downloading Orca $ORCA_VERSION ($arch)..."
+    curl --fail --show-error --location --retry 3 --connect-timeout 15 --max-time 600 \
+      --proto '=https' --proto-redir '=https' "$url" -o "$temporary/server.tar.gz"
+  fi
   actual=$(sha256sum "$temporary/server.tar.gz")
   [[ ${actual%% *} == "$expected" ]] || fail 'SHA256 mismatch. The download will not be unpacked or executed.'
   mkdir "$temporary/release"
@@ -117,6 +135,11 @@ if [[ ! -f "$release/.archive-sha256" || $(<"$release/.archive-sha256") != "$exp
   [[ "$archive_version" == "$ORCA_VERSION" ]] || fail "Archive version does not match the lock file: expected $ORCA_VERSION, found $archive_version."
   printf '%s\n' "$expected" > "$temporary/release/.archive-sha256"
   mv -- "$temporary/release" "$release"
+fi
+
+if [[ "$pending_upgrade_stop" == 1 ]]; then
+  note "Stopping Orca $current_version before activating $ORCA_VERSION..."
+  "$PREFIX/bin/orca-service" stop 8>&-
 fi
 
 ln -s "$release" "$temporary/current"

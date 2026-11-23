@@ -1,0 +1,31 @@
+ARG BASE_HUB_IMAGE
+FROM ${BASE_HUB_IMAGE}
+ARG ORCA_VERSION
+ARG ORCA_DEB_URL
+ARG ORCA_DEB_SHA256
+ARG ORCA_DEB_LOCAL=""
+USER 0:0
+COPY . /tmp/orca-hub-ctx/
+RUN if [ -n "$ORCA_DEB_LOCAL" ] && [ -f "/tmp/orca-hub-ctx/$ORCA_DEB_LOCAL" ]; then \
+      cp "/tmp/orca-hub-ctx/$ORCA_DEB_LOCAL" /tmp/orca.deb; \
+    else \
+      curl -fsSL --retry 3 --connect-timeout 20 --max-time 900 \
+        --proto '=https' --proto-redir '=https' "$ORCA_DEB_URL" -o /tmp/orca.deb; \
+    fi \
+    && printf '%s  /tmp/orca.deb\n' "$ORCA_DEB_SHA256" | sha256sum -c - \
+    && test "$(dpkg-deb -f /tmp/orca.deb Version)" = "$ORCA_VERSION" \
+    && rm -rf /opt/Orca \
+    && dpkg-deb -x /tmp/orca.deb / \
+    && rm -rf /tmp/orca.deb /opt/orca-hub \
+    && mkdir -p /opt/orca-hub \
+    && cp -a /tmp/orca-hub-ctx/. /opt/orca-hub/ \
+    && rm -f /opt/orca-hub/*.deb \
+    && rm -rf /tmp/orca-hub-ctx \
+    && chmod 755 /opt/orca-hub /opt/orca-hub/entrypoint.sh /opt/orca-hub/hubctl \
+    && chmod 644 /opt/orca-hub/*.cjs \
+    && ln -sf /opt/orca-hub/hubctl /usr/local/bin/hubctl
+ENV HOME=/home/orca ORCA_USER_DATA_PATH=/home/orca/.config/orca ORCA_HUB_REQUIRE_MONITOR=1 ORCA_HUB_REQUIRE_BRIDGE=1 ORCA_DESKTOP_PORT=6769
+USER 10001:10001
+WORKDIR /home/orca
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=3 CMD ["hubctl", "health"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/opt/orca-hub/entrypoint.sh"]

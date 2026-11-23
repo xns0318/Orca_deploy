@@ -150,23 +150,22 @@ async function main() {
   }
   const one = await addNode('node-one');
   const two = await addNode('node-two');
-  assert.equal(hub.list().length, 2);
+  assert.equal((await hub.list()).length, 2);
   const before = readFileSync(join(hubState.profile, 'orca-environments.json'), 'utf8');
   await hub.register(one.name, one.offer);
   assert.equal(readFileSync(join(hubState.profile, 'orca-environments.json'), 'utf8'), before);
   await assert.rejects(() => hub.register(one.name, two.offer));
-  assert.equal(hub.list().length, 2);
+  assert.equal((await hub.list()).length, 2);
   pass('two real servers enroll; repeated enrollment is stable and identity collisions are refused');
 
   // --- Mobile relay verification (G12 zero regression) ---
   const { parsePairingCode } = hub.native('shared/remote-runtime/pairing/pairing.js');
-  const { exchangeCliPairingCode } = hub.native('cli/runtime/environment-pairing-exchange.js');
   const { pairedRuntimeConnectionFromOffer } = hub.native('shared/remote-runtime/pairing/paired-runtime-connection.js');
   const { openRemoteRuntimePassthroughSocket } = hub.native('shared/remote-runtime/remote-runtime-passthrough-socket.js');
   const { remoteRuntimeClientCapabilities } = hub.native('shared/remote-runtime/remote-runtime-client-capabilities.js');
   const { decodeTerminalStreamFrame, decodeTerminalStreamText } = hub.native('shared/terminal/stream/terminal-stream-protocol.js');
   const offer = await hub.pair(hubState.env.ORCA_HUB_ADDRESS);
-  const saved = parsePairingCode(await exchangeCliPairingCode(offer.result.pairingUrl));
+  const saved = parsePairingCode(await hub.exchangeMobilePairingCode(offer.result.pairingUrl));
   assert.equal(saved.scope, 'mobile');
   async function openPhone() {
     const frames = new Map();
@@ -298,13 +297,13 @@ async function main() {
   pass('newly registered third server is discovered and operated by both phone and all 3 Windows clients');
 
   // Hub restart: preserves phone pairing, desktop clients, and existing Windows saved endpoints!
-  const beforeRestart = hub.list();
+  const beforeRestart = await hub.list();
   phone.close();
   await stop(hubChild);
   hubChild = startHub();
   await eventually(() => hub.health(), 'hub restart');
   await eventually(async () => { await hubctl(['health']); return true; }, 'bridge ready after hub restart');
-  assert.deepEqual(hub.list(), beforeRestart);
+  assert.deepEqual(await hub.list(), beforeRestart);
   phone = await openPhone();
   const hostId = `runtime:${one.registered.id}`;
   const client = { id: saved.deviceToken, type: 'mobile' };

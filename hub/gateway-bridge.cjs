@@ -105,15 +105,15 @@ function createGatewayBridgeServer(options) {
   const activeTunnels = new Map(); // nodeName -> Set<{ clientSocket, upstream, endpoint }>
   let boundPort = Number(desktopPort);
 
-  const currentNodes = () => {
+  const currentNodes = async () => {
     try {
-      return listNodes();
+      return await listNodes();
     } catch {
       return [];
     }
   };
 
-  const currentNodesByName = () => new Map(currentNodes().map((row) => [row.name, row]));
+  const currentNodesByName = async () => new Map((await currentNodes()).map((row) => [row.name, row]));
 
   const endpointForNode = (name) => desktopEndpoint(hubAddress, boundPort || desktopPort, name);
 
@@ -132,8 +132,8 @@ function createGatewayBridgeServer(options) {
     tunnel.upstream.once('close', cleanup);
   };
 
-  const reconcileTunnels = () => {
-    const byName = currentNodesByName();
+  const reconcileTunnels = async () => {
+    const byName = await currentNodesByName();
     for (const [nodeName, tunnels] of activeTunnels.entries()) {
       const row = byName.get(nodeName);
       for (const tunnel of tunnels) {
@@ -168,7 +168,7 @@ function createGatewayBridgeServer(options) {
       store.touchClient(client);
 
       if (method === 'GET' && pathname === '/sync/state') {
-        const nodes = store.stateForClient(client, currentNodes(), endpointForNode);
+        const nodes = store.stateForClient(client, await currentNodes(), endpointForNode);
         sendJson(res, 200, { ok: true, client, nodes });
         return;
       }
@@ -180,7 +180,7 @@ function createGatewayBridgeServer(options) {
             sendJson(res, 400, { ok: false, error: 'invalid_node' });
             return;
           }
-          const result = store.claimOffer(client, body.node, currentNodesByName());
+          const result = store.claimOffer(client, body.node, await currentNodesByName());
           if (!result.ok) {
             sendJson(res, result.statusCode, { ok: false, error: result.error });
             return;
@@ -216,7 +216,7 @@ function createGatewayBridgeServer(options) {
     sendJson(res, 404, { ok: false, error: 'not_found' });
   });
 
-  server.on('upgrade', (req, clientSocket, head) => {
+  server.on('upgrade', async (req, clientSocket, head) => {
     const upgradeHeader = typeof req.headers.upgrade === 'string' ? req.headers.upgrade.toLowerCase() : '';
     const match = NODE_PATH_RE.exec(req.url || '');
     if (upgradeHeader !== 'websocket' || !match) {
@@ -228,7 +228,7 @@ function createGatewayBridgeServer(options) {
       writeHttpErrorAndClose(clientSocket, '404 Not Found');
       return;
     }
-    const row = currentNodesByName().get(nodeName);
+    const row = (await currentNodesByName()).get(nodeName);
     const target = row ? parseUpstreamTarget(row.endpoint) : null;
     if (!target) {
       writeHttpErrorAndClose(clientSocket, '404 Not Found');

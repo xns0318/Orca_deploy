@@ -39,10 +39,11 @@ expect_failure() {
   if "$@" >"$output" 2>&1; then printf 'Unexpected success: %s\n' "$*" >&2; exit 1; fi
 }
 source "$ROOT/linux/common.sh"
-[[ $(server_release_version "$ROOT/tests/fixtures/server.VERSION") == 1.4.259 ]]
-printf 'node 24.22.1\r\norca 1.4.259' > "$work/VERSION"
-[[ $(server_release_version "$work/VERSION") == 1.4.259 ]]
-for manifest in '' '1.4.259' 'orcad 1.4.259' 'orca invalid' 'orca 1.4.259 extra' $'orca 1.4.259\norca 1.4.259'; do
+source "$ROOT/versions.lock.env"
+[[ $(server_release_version "$ROOT/tests/fixtures/server.VERSION") == "$ORCA_VERSION" ]]
+printf 'node 24.22.1\r\norca %s' "$ORCA_VERSION" > "$work/VERSION"
+[[ $(server_release_version "$work/VERSION") == "$ORCA_VERSION" ]]
+for manifest in '' "$ORCA_VERSION" "orcad $ORCA_VERSION" 'orca invalid' "orca $ORCA_VERSION extra" $'orca 1.4.271\norca 1.4.271'; do
   printf '%s\n' "$manifest" > "$work/VERSION"
   expect_failure server_release_version "$work/VERSION"
 done
@@ -80,17 +81,35 @@ cp "$work/good.env" "$work/repo/versions.lock.env"
 pass 'checksum failure prevents extraction and execution'
 
 cp "$FIXTURE_ARCHIVE" "$work/good.tar.gz"
-sed -i 's/^orca 1\.4\.259$/orca 1.4.258/' "$work/package/orca/VERSION"
+sed -i "s/^orca ${ORCA_VERSION//./\\.}$/orca 1.4.258/" "$work/package/orca/VERSION"
 tar -czf "$FIXTURE_ARCHIVE" -C "$work/package" orca
 hash=$(sha256sum "$FIXTURE_ARCHIVE")
 hash=${hash%% *}
 sed -i -E "s/^(LINUX_(X64|ARM64)_SHA256)=.*/\1=$hash/" "$work/repo/versions.lock.env"
 expect_failure bash "$installer" --prefix "$work/wrong-version" --name test --address ws://100.64.0.1:16768
-rg -q 'expected 1.4.259, found 1.4.258' "$output"
+rg -q "expected $ORCA_VERSION, found 1.4.258" "$output"
 [[ ! -e "$work/wrong-version/current" && ! -f "$work/wrong-version/config.env" ]]
 cp "$work/good.tar.gz" "$FIXTURE_ARCHIVE"
 cp "$work/good.env" "$work/repo/versions.lock.env"
 pass 'a checksum-valid archive with a different Orca version is rejected before activation'
+
+# Verify --archive installs without curl download and --upgrade switches a running older version cleanly.
+downloads_before=$(wc -l < "$FIXTURE_DOWNLOADS")
+bash "$installer" --prefix "$work/preloaded" --name preloaded --address ws://100.64.0.1:16768 --archive "$FIXTURE_ARCHIVE" --no-pair >"$output" 2>&1
+[[ $(wc -l < "$FIXTURE_DOWNLOADS") == "$downloads_before" ]]
+"$work/preloaded/bin/orca-service" status >/dev/null
+old_rel_dir=$(readlink -f "$work/preloaded/current")
+prev_rel_dir="$work/preloaded/releases/1.4.259-prev"
+mv -- "$old_rel_dir" "$prev_rel_dir"
+ln -sfn -- "$prev_rel_dir" "$work/preloaded/current"
+sed -i "s/^orca ${ORCA_VERSION//./\\.}$/orca 1.4.259/" "$prev_rel_dir/VERSION"
+expect_failure bash "$installer" --prefix "$work/preloaded" --archive "$FIXTURE_ARCHIVE" --no-pair
+rg -q 'Stop the server' "$output"
+bash "$installer" --prefix "$work/preloaded" --archive "$FIXTURE_ARCHIVE" --upgrade --no-pair >"$output" 2>&1
+[[ $(server_release_version "$work/preloaded/current/VERSION") == "$ORCA_VERSION" ]]
+"$work/preloaded/bin/orca-service" status >/dev/null
+"$work/preloaded/bin/orca-service" stop >/dev/null 2>&1
+pass '--archive skips download and --upgrade stops old version and activates the new release'
 
 bash "$installer" --prefix "$prefix" --name dev-01 --address ws://100.64.0.1:16768 --no-start >"$output" 2>&1
 [[ -x "$service" && ! -f "$prefix/server.pid" && ! -f "$prefix/server.pairing.json" ]]

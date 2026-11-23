@@ -158,12 +158,19 @@ if (args[0] === 'exec') {
     }
   }
   if (container === 'agent-one') {
-    if (cmd[0] === 'sh') done('/root');
+    if (cmd[0] === 'sh' && cmd[1] === '-c' && cmd[2]?.startsWith('getent')) done('/root');
+    if (cmd[0] === 'sh' && cmd[1] === '-c' && cmd[2]?.startsWith('cat >')) { fs.readFileSync(0); done(); }
     if (cmd[0] === 'test') { if (!state.agentInstalled) fail(); done(); }
     if (cmd[0] === 'mktemp') done('/tmp/orca-enroll.fixture');
     if (cmd[0] === 'rm') done();
     if (cmd[0] === 'tar') { fs.readFileSync(0); done(); }
-    if (cmd[0] === 'bash' && cmd[2].startsWith('source')) done('6768');
+    if (cmd[0] === 'bash' && cmd[2]?.startsWith('source')) done('6768');
+    if (cmd[0] === 'bash' && cmd[2]?.startsWith('awk')) done(state.agentVersion || '');
+    if (cmd[0] === 'bash' && cmd[1]?.endsWith('/install.sh')) {
+      state.agentInstalled = true;
+      state.agentVersion = process.env.HUB_FIXTURE_TARGET_VERSION || '1.4.271';
+      save(); done();
+    }
     if (cmd[0] === 'bash') { state.agentInstalled = true; save(); done(); }
     if (cmd[0].endsWith('/orca-service')) done(JSON.stringify({ ok: true, result: { available: true, pairingUrl: 'orca://pair?TEST_ONLY_PRIVATE_OFFER' } }));
   }

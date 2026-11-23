@@ -9,7 +9,6 @@ const address = `ws://127.0.0.1:${process.env.ORCA_HUB_PORT || '6768'}`;
 const credentialPath = join(profile, 'hub-monitor.pairing.json');
 const heartbeatPath = join(profile, 'hub-monitor.heartbeat');
 const { parsePairingCode } = hub.native('shared/remote-runtime/pairing/pairing.js');
-const { exchangeCliPairingCode } = hub.native('cli/runtime/environment-pairing-exchange.js');
 const { pairedRuntimeConnectionFromOffer } = hub.native('shared/remote-runtime/pairing/paired-runtime-connection.js');
 const { openRemoteRuntimePassthroughSocket } = hub.native('shared/remote-runtime/remote-runtime-passthrough-socket.js');
 const { remoteRuntimeClientCapabilities } = hub.native('shared/remote-runtime/remote-runtime-client-capabilities.js');
@@ -37,7 +36,7 @@ async function open() {
   }
   if (!pairing) {
     const offer = await hub.pair(address);
-    const pairingUrl = await exchangeCliPairingCode(offer.result.pairingUrl);
+    const pairingUrl = await hub.exchangeMobilePairingCode(offer.result.pairingUrl);
     pairing = parsePairingCode(pairingUrl);
     persist(credentialPath, JSON.stringify({ pairingUrl }));
   }
@@ -79,7 +78,7 @@ async function main() {
         await hub.health();
         if (!connection) await open();
         persist(heartbeatPath, String(Date.now()));
-        const queue = hub.list();
+        const queue = await hub.list();
         await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
           while (queue.length && connection && !stopped) {
             const row = queue.shift();

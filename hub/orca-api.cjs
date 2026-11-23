@@ -1,4 +1,5 @@
 'use strict';
+const { existsSync } = require('node:fs');
 const { join } = require('node:path');
 
 class HubError extends Error {}
@@ -44,14 +45,32 @@ function desktopEndpoint(hubAddress, desktopPort, nodeName) {
 function createHub(app, profile) {
   // Use the pinned release's own pairing, encrypted transport and atomic store APIs.
   const out = join(app, 'resources/app.asar.unpacked/out');
-  const native = (path) => require(join(out, path));
+  const native = (...candidates) => {
+    for (const rel of candidates) {
+      const full = join(out, rel);
+      if (existsSync(full)) return require(full);
+    }
+    return require(join(out, candidates[0]));
+  };
   const { RuntimeClient } = native('cli/runtime/client.js');
   const { parsePairingCode, encodePairingOffer } = native('shared/remote-runtime/pairing/pairing.js');
-  const { exchangeCliPairingCode } = native('cli/runtime/environment-pairing-exchange.js');
+  const { pairedRuntimeConnectionFromOffer } = native('shared/remote-runtime/pairing/paired-runtime-connection.js');
+  const { exchangeRemotePairingTicket } = native('shared/remote-runtime/pairing/remote-pairing-ticket-exchange.js');
+  const { sendRemoteRuntimeRequestOnSocket } = native('shared/remote-runtime/requests/remote-runtime-request-socket.js');
+  const { exchangeCliPairingCode } = native(
+    'cli/runtime/pairing/environment-pairing-exchange.js',
+    'cli/runtime/environment-pairing-exchange.js'
+  );
   const store = native('shared/remote-runtime/host-store/runtime-environment-store.js');
+  try {
+    const workerClient = native('shared/remote-runtime/host-store/runtime-environment-store-worker-client.js');
+    if (typeof workerClient.useInlineEnvironmentStoreForCli === 'function') {
+      workerClient.useInlineEnvironmentStoreForCli();
+    }
+  } catch {}
   const { getPreferredPairingOffer } = native('shared/remote-runtime/host-catalog/runtime-environments.js');
   const client = () => new RuntimeClient(profile, 20000, null, null);
-  const rows = () => store.listEnvironments(profile);
+  const rows = async () => await store.listEnvironments(profile);
   const publicRow = (row) => ({ id: row.id, name: row.name, endpoint: getPreferredPairingOffer(row).endpoint });
   const sameKey = (a, b) => Buffer.from(a, 'base64').equals(Buffer.from(b, 'base64'));
   const status = async (remote) => (await remote.call('status.get')).result;
@@ -72,13 +91,13 @@ function createHub(app, profile) {
       }
       return { version: value.appVersion, runtimeId: value.runtimeId, ready: true };
     },
-    list: () => rows().map(publicRow),
-    nodeRow(name) {
-      const row = rows().find((entry) => entry.name === name);
+    list: async () => (await rows()).map(publicRow),
+    async nodeRow(name) {
+      const row = (await rows()).find((entry) => entry.name === name);
       return row ? publicRow(row) : null;
     },
     async mintDesktopOffer(name, response, gatewayEndpoint) {
-      const row = rows().find((entry) => entry.name === name);
+      const row = (await rows()).find((entry) => entry.name === name);
       if (!row) throw new HubError('No registered server with this name.');
       if (response?.ok !== true || response.result?.available !== true) {
         throw new HubError('Expected a successful Orca pairing JSON response on stdin.');
@@ -106,7 +125,7 @@ function createHub(app, profile) {
       };
     },
     async probe(name, endpoint) {
-      const row = rows().find((entry) => entry.name === name);
+      const row = (await rows()).find((entry) => entry.name === name);
       if (!row || getPreferredPairingOffer(row).endpoint !== endpoint) return false;
       const remote = new RuntimeClient(profile, 10000, null, row.id);
       checkReady(await status(remote));
@@ -122,8 +141,9 @@ function createHub(app, profile) {
       const code = response.result.pairingUrl;
       const offer = typeof code === 'string' ? parsePairingCode(code) : null;
       if (!offer || offer.scope !== 'runtime') throw new HubError('A runtime-scoped pairing offer is required.');
-      const named = rows().find((row) => row.name.toLowerCase() === name.toLowerCase());
-      const keyed = rows().find((row) => sameKey(getPreferredPairingOffer(row).publicKeyB64, offer.publicKeyB64));
+      const existing = await rows();
+      const named = existing.find((row) => row.name.toLowerCase() === name.toLowerCase());
+      const keyed = existing.find((row) => sameKey(getPreferredPairingOffer(row).publicKeyB64, offer.publicKeyB64));
       if (named && (!keyed || named.id !== keyed.id)) {
         throw new HubError('This name belongs to another server identity. Remove its hub registration explicitly first.');
       }
@@ -135,8 +155,8 @@ function createHub(app, profile) {
       const exchanged = await exchangeCliPairingCode(code);
       const remoteStatus = checkReady(await status(new RuntimeClient(profile, 15000, exchanged, null)));
       const row = keyed
-        ? store.updateEnvironmentFromPairingCode(profile, keyed.id, { pairingCode: exchanged, runtimeId: remoteStatus.runtimeId })
-        : store.addEnvironmentFromPairingCode(profile, { name, pairingCode: exchanged });
+        ? await store.updateEnvironmentFromPairingCode(profile, keyed.id, { pairingCode: exchanged, runtimeId: remoteStatus.runtimeId })
+        : await store.addEnvironmentFromPairingCode(profile, { name, pairingCode: exchanged });
       // This records the remote runtime identity through the native CLI path.
       checkReady(await status(new RuntimeClient(profile, 15000, null, row.id)));
       // mobileRelay.hosts.* has a catalog only on authenticated WebSocket dispatch,
@@ -149,10 +169,27 @@ function createHub(app, profile) {
       if (!response.result.available) throw new HubError('Orca did not create a mobile pairing offer.');
       return response;
     },
-    remove(name) {
-      const row = rows().find((entry) => entry.name === name);
+    async exchangeMobilePairingCode(pairingCode) {
+      const offer = parsePairingCode(pairingCode);
+      if (!offer || offer.scope !== 'mobile') throw new HubError('A mobile-scoped pairing offer is required.');
+      const statusResponse = await sendRemoteRuntimeRequestOnSocket(
+        pairedRuntimeConnectionFromOffer(offer),
+        'status.get',
+        undefined,
+        10000
+      );
+      if (!statusResponse?.ok) throw new HubError('Mobile pairing status probe failed.');
+      return exchangeRemotePairingTicket({
+        pairingCode,
+        offer,
+        hostCapabilities: statusResponse.result?.capabilities,
+        send: sendRemoteRuntimeRequestOnSocket
+      });
+    },
+    async remove(name) {
+      const row = (await rows()).find((entry) => entry.name === name);
       if (!row) throw new HubError('No registered server with this name.');
-      return publicRow(store.removeEnvironment(profile, row.id));
+      return publicRow(await store.removeEnvironment(profile, row.id));
     }
   };
 }

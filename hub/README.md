@@ -279,12 +279,28 @@ An image/configuration change requires an explicit hub replacement:
 bash hub/install.sh --network bridge --recreate
 ```
 
-On an offline host where a matching `orca-deploy-hub:<version>-<arch>-*` base image
+On an offline host where an earlier `orca-deploy-hub:<version>-<arch>-*` base image
 is already loaded (for example from an earlier deployment or `docker image load`),
-rebuild updated hub scripts completely offline with `--reuse-local-base`:
+rebuild hub script updates or cross-version Orca upgrades without touching Docker Hub:
 
 ```sh
 bash hub/install.sh --network bridge --recreate --reuse-local-base
+```
+
+To upgrade **both `orca-hub` and all enrolled agent containers** together to the
+`ORCA_VERSION` pinned in `versions.lock.env` (downloading `orca-server` once on the host
+and reusing it across all containers, without touching Docker Hub):
+
+```sh
+bash hub/upgrade.sh
+# Or completely offline using pre-downloaded verified packages:
+bash hub/upgrade.sh --hub-deb /path/orca-ide_<ver>_amd64.deb --server-archive /path/orca-server-linux-x64.tar.gz
+```
+
+To bump `versions.lock.env` to a newer official GitHub release with verified SHA256 digests:
+
+```sh
+bash hub/bump-version.sh 1.4.271   # or: bash hub/bump-version.sh latest
 ```
 
 This stops/replaces only the owned hub container and keeps its home volume. Agents
